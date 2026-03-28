@@ -1,8 +1,11 @@
 const API = '/api/airtable';
 
-/** Nombres de tabla sin literales legibles (Chrome Translate altera strings y "_" → espacio). */
+/** ID tabla Leads en la base modular (más estable que el nombre; coincide con la URL de Airtable). */
 const _n = String.fromCharCode;
-export const AIRTABLE_TABLE_LEADS = _n(76, 101, 97, 100, 115); // Leads
+const LEADS_TABLE_ID_DEFAULT = 'tbl0cIs2by0wqny4U';
+export const AIRTABLE_TABLE_LEADS =
+  (import.meta.env.VITE_AIRTABLE_TABLE_LEADS_ID && String(import.meta.env.VITE_AIRTABLE_TABLE_LEADS_ID).trim()) ||
+  LEADS_TABLE_ID_DEFAULT;
 const NOTAS_LEADS_DEFAULT = _n(78, 111, 116, 97, 115, 95, 76, 101, 97, 100, 115); // Notas_Leads
 
 /**

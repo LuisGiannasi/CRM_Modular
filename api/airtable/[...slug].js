@@ -41,16 +41,17 @@ export default async function handler(req, res) {
   }
 
   let parts = pathPartsFromRequest();
+  /** Mismo segmento que el front (ID tabla Leads en base modular). */
+  const leadsTableSegment = process.env.AIRTABLE_TABLE_LEADS_ID || 'tbl0cIs2by0wqny4U';
   /**
-   * Vercel a veces entrega solo /recXXXXXXXX (sin "Leads") en PATCH/GET por registro.
-   * Este CRM solo usa esa forma para la tabla Leads.
+   * Vercel a veces entrega solo /recXXXXXXXX en PATCH/GET por registro.
    */
   if (
     parts.length === 1 &&
     /^rec[a-zA-Z0-9]{8,}$/i.test(parts[0]) &&
     ['GET', 'PATCH', 'DELETE', 'PUT'].includes(req.method)
   ) {
-    parts = ['Leads', parts[0]];
+    parts = [leadsTableSegment, parts[0]];
   }
 
   if (parts.length === 0) {
