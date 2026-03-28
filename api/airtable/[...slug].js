@@ -39,7 +39,19 @@ export default async function handler(req, res) {
     return trimmed.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
   }
 
-  const parts = pathPartsFromRequest();
+  let parts = pathPartsFromRequest();
+  /**
+   * Vercel a veces entrega solo /recXXXXXXXX (sin "Leads") en PATCH/GET por registro.
+   * Este CRM solo usa esa forma para la tabla Leads.
+   */
+  if (
+    parts.length === 1 &&
+    /^rec[a-zA-Z0-9]{8,}$/i.test(parts[0]) &&
+    ['GET', 'PATCH', 'DELETE', 'PUT'].includes(req.method)
+  ) {
+    parts = ['Leads', parts[0]];
+  }
+
   if (parts.length === 0) {
     return res.status(400).json({ error: 'Ruta inválida' });
   }

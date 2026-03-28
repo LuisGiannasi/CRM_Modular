@@ -1,5 +1,23 @@
 const API = '/api/airtable';
 
+function errorMessageFromResponse(text, status) {
+  if (!text) return `${status} ${status === 404 ? 'No encontrado' : ''}`.trim();
+  try {
+    const j = JSON.parse(text);
+    if (j.error?.message) return j.error.message;
+    if (typeof j.error === 'string') return j.error;
+    if (j.error?.type) return j.error.type;
+  } catch {
+    /* HTML o texto plano (p. ej. página NOT_FOUND de Vercel) */
+  }
+  if (/NOT_FOUND|could not be found|no encontrad/i.test(text)) {
+    return (
+      'No se pudo contactar la API (404). Recargá la página; si sigue igual, redeploy en Vercel o revisá que la URL sea /api/airtable/…'
+    );
+  }
+  return text.length > 400 ? `${text.slice(0, 400)}…` : text;
+}
+
 async function req(path, options = {}) {
   const url = `${API}${path.startsWith('/') ? path : `/${path}`}`;
   const res = await fetch(url, {
@@ -8,7 +26,7 @@ async function req(path, options = {}) {
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(text || `${res.status} ${res.statusText}`);
+    throw new Error(errorMessageFromResponse(text, res.status));
   }
   return text ? JSON.parse(text) : {};
 }
@@ -51,18 +69,30 @@ export async function updateRecord(table, id, fields) {
 
 /**
  * Notas vinculadas a un lead (requiere campo `lead` en Notas_Leads — script 07-link-notas-lead.js).
+ * ARRAYJOIN + FIND es más fiable que `{lead} = 'rec…'` con multipleRecordLinks.
+ * El orden por fecha se hace en cliente para evitar 422 por sort en algunas bases.
  */
 export async function fetchNotasByLead(leadId) {
-  const formula = `{lead} = '${leadId.replace(/'/g, "\\'")}'`;
-  const params = new URLSearchParams({
-    filterByFormula: formula,
-    'sort[0][field]': 'fecha',
-    'sort[0][direction]': 'desc',
-  });
-  try {
-    const data = await req(`/${encodeURIComponent('Notas_Leads')}?${params}`);
-    return data.records || [];
-  } catch {
-    return null;
+  const escaped = leadId.replace(/'/g, "\\'");
+  const formulas = [
+    `FIND('${escaped}', ARRAYJOIN({lead}))`,
+    `{lead} = '${escaped}'`,
+  ];
+
+  for (const filterByFormula of formulas) {
+    const params = new URLSearchParams({ filterByFormula });
+    try {
+      const data = await req(`/${encodeURIComponent('Notas_Leads')}?${params}`);
+      const records = data.records || [];
+      records.sort((a, b) => {
+        const fa = String(a.fields?.fecha ?? '');
+        const fb = String(b.fields?.fecha ?? '');
+        return fb.localeCompare(fa);
+      });
+      return records;
+    } catch {
+      /* probá la otra fórmula o devolvé null */
+    }
   }
+  return null;
 }

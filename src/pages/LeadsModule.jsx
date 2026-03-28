@@ -303,7 +303,7 @@ export default function LeadsModule() {
     <>
       <header className="app-header">
         <h1>CRM Modular — Módulo 1 · Leads</h1>
-        <p>Listado, alta y edición contra la tabla Leads de Airtable (proxy local sin exponer el token).</p>
+        <p>Listado, alta y edición contra la tabla Leads de Airtable (el token solo en el servidor: Vite en local o función en Vercel).</p>
       </header>
 
       <div className="layout">
