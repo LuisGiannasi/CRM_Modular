@@ -61,16 +61,6 @@ export default async function handler(req, res) {
     .map((p, i) => (i === 0 ? encodeURIComponent(p) : encodeURIComponent(p)))
     .join('/');
   const airtableSearch = req.method === 'GET' ? reqUrl.search : '';
-
-  /* Diagnóstico temporal: Vercel → Functions → logs; luego eliminar estos console.log. */
-  console.log('[proxy] method:', req.method);
-  console.log('[proxy] slug raw:', req.query.slug);
-  console.log('[proxy] parts:', parts);
-  console.log('[proxy] pathAfterBase:', pathAfterBase);
-  console.log('[proxy] target:', `https://api.airtable.com/v0/${baseId}/${pathAfterBase}${reqUrl.search}`);
-  console.log('[proxy] baseId:', baseId);
-  console.log('[proxy] targetFetch:', `https://api.airtable.com/v0/${baseId}/${pathAfterBase}${airtableSearch}`);
-
   const target = `https://api.airtable.com/v0/${baseId}/${pathAfterBase}${airtableSearch}`;
 
   const allowed = ['GET', 'POST', 'PATCH', 'DELETE', 'PUT'];
