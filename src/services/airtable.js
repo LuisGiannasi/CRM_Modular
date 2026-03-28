@@ -15,6 +15,17 @@ export const AIRTABLE_TABLE_NOTAS_LEADS = (() => {
   return NOTAS_LEADS_DEFAULT;
 })();
 
+/**
+ * Nombre del campo link en Notas_Leads → Leads (debe coincidir con Airtable).
+ * Por defecto `lead` (script 07). Si creaste la columna como `leads`, en .env y Vercel:
+ * VITE_AIRTABLE_NOTAS_LINK_FIELD=leads
+ */
+export const AIRTABLE_NOTAS_LINK_FIELD = (() => {
+  const raw = import.meta.env.VITE_AIRTABLE_NOTAS_LINK_FIELD;
+  if (raw && String(raw).trim()) return String(raw).trim();
+  return _n(108, 101, 97, 100); // lead
+})();
+
 function errorMessageFromResponse(text, status) {
   if (!text) return `${status} ${status === 404 ? 'No encontrado' : ''}`.trim();
   try {
@@ -83,15 +94,15 @@ export async function updateRecord(table, id, fields) {
 }
 
 /**
- * Notas vinculadas a un lead (requiere campo `lead` en Notas_Leads — script 07-link-notas-lead.js).
- * ARRAYJOIN + FIND es más fiable que `{lead} = 'rec…'` con multipleRecordLinks.
- * El orden por fecha se hace en cliente para evitar 422 por sort en algunas bases.
+ * Notas vinculadas a un lead (campo link = AIRTABLE_NOTAS_LINK_FIELD).
+ * El orden por fecha se hace en cliente.
  */
 export async function fetchNotasByLead(leadId) {
+  const lf = AIRTABLE_NOTAS_LINK_FIELD;
   const escaped = leadId.replace(/'/g, "\\'");
   const formulas = [
-    `FIND('${escaped}', ARRAYJOIN({lead}))`,
-    `{lead} = '${escaped}'`,
+    `FIND('${escaped}', ARRAYJOIN({${lf}}))`,
+    `{${lf}} = '${escaped}'`,
   ];
 
   for (const filterByFormula of formulas) {

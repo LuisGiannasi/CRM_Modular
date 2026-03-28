@@ -6,6 +6,7 @@ import {
   fetchNotasByLead,
   AIRTABLE_TABLE_LEADS,
   AIRTABLE_TABLE_NOTAS_LEADS,
+  AIRTABLE_NOTAS_LINK_FIELD,
 } from '../services/airtable';
 import {
   ETAPAS,
@@ -177,7 +178,7 @@ export default function LeadsModule() {
       if (rows === null) {
         setNotas([]);
         setNotasError(
-          'No se pudieron cargar las notas. Si aún no existe el campo link, ejecutá: node scripts/airtable-schema/07-link-notas-lead.js'
+          'No se pudieron cargar las notas. Verificá en Airtable el nombre exacto del link a Leads y en .env / Vercel: VITE_AIRTABLE_NOTAS_LINK_FIELD (ej. leads o lead).'
         );
         return;
       }
@@ -268,15 +269,15 @@ export default function LeadsModule() {
         tipo: nuevaNota.tipo || 'Observación',
         fecha,
         autor_nombre: nuevaNota.autor_nombre.trim() || '—',
-        lead: [selected.id],
+        [AIRTABLE_NOTAS_LINK_FIELD]: [selected.id],
       });
       setNuevaNota({ contenido: '', tipo: 'Observación', autor_nombre: nuevaNota.autor_nombre });
       const rows = await fetchNotasByLead(selected.id);
       setNotas(rows || []);
     } catch (e) {
       setNotasError(
-        e.message?.includes('UNKNOWN_FIELD_NAME') || e.message?.includes('lead')
-          ? 'Falta el campo link en Notas_Leads. Ejecutá: node scripts/airtable-schema/07-link-notas-lead.js'
+        e.message?.includes('UNKNOWN_FIELD_NAME') || /field/i.test(e.message || '')
+          ? `El nombre del campo link no coincide con Airtable. Configurá VITE_AIRTABLE_NOTAS_LINK_FIELD con el nombre exacto de la columna (ej. leads).`
           : e.message || String(e)
       );
     } finally {
