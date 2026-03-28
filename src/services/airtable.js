@@ -93,9 +93,42 @@ export async function updateRecord(table, id, fields) {
   });
 }
 
+function sortNotasByFechaDesc(records) {
+  records.sort((a, b) => {
+    const fa = String(a.fields?.fecha ?? '');
+    const fb = String(b.fields?.fecha ?? '');
+    return fb.localeCompare(fa);
+  });
+  return records;
+}
+
+/** ¿Este registro de Notas_Leads apunta a este lead? Prueba varios nombres de campo típicos. */
+function recordLinksToLead(record, leadId, preferredField) {
+  const keys = [preferredField, 'leads', 'lead', 'Leads', 'Lead'];
+  const seen = new Set();
+  for (const k of keys) {
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    const v = record.fields?.[k];
+    if (Array.isArray(v) && v.includes(leadId)) return true;
+    if (typeof v === 'string' && v === leadId) return true;
+  }
+  return false;
+}
+
+/**
+ * Sin filterByFormula: lista hasta `maxRecords` notas y filtra en el navegador.
+ * Evita 422 cuando Airtable rechaza la fórmula (tipo de link / nombre de campo).
+ */
+async function fetchNotasByLeadClientSide(leadId, preferredField, maxRecords = 100) {
+  const params = new URLSearchParams({ maxRecords: String(maxRecords) });
+  const data = await req(`/${encodeURIComponent(AIRTABLE_TABLE_NOTAS_LEADS)}?${params}`);
+  const filtered = (data.records || []).filter((r) => recordLinksToLead(r, leadId, preferredField));
+  return sortNotasByFechaDesc(filtered);
+}
+
 /**
  * Notas vinculadas a un lead (campo link = AIRTABLE_NOTAS_LINK_FIELD).
- * El orden por fecha se hace en cliente.
  */
 export async function fetchNotasByLead(leadId) {
   const lf = AIRTABLE_NOTAS_LINK_FIELD;
@@ -109,16 +142,15 @@ export async function fetchNotasByLead(leadId) {
     const params = new URLSearchParams({ filterByFormula });
     try {
       const data = await req(`/${encodeURIComponent(AIRTABLE_TABLE_NOTAS_LEADS)}?${params}`);
-      const records = data.records || [];
-      records.sort((a, b) => {
-        const fa = String(a.fields?.fecha ?? '');
-        const fb = String(b.fields?.fecha ?? '');
-        return fb.localeCompare(fa);
-      });
-      return records;
+      return sortNotasByFechaDesc(data.records || []);
     } catch {
-      /* probá la otra fórmula o devolvé null */
+      /* siguiente fórmula o fallback */
     }
   }
-  return null;
+
+  try {
+    return await fetchNotasByLeadClientSide(leadId, lf, 100);
+  } catch {
+    return null;
+  }
 }
