@@ -12,21 +12,31 @@ export default async function handler(req, res) {
     });
   }
 
-  /** Segmentos tras /api/airtable/ (Vercel a veces no rellena req.query.slug en rutas catch-all). */
+  const host = req.headers.host || 'localhost';
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const reqUrl = new URL(req.url || '/', `${proto}://${host}`);
+
+  /**
+   * Segmentos hacia Airtable (tabla, opcional record id, …).
+   * En Vercel, req.url suele ser solo el subpath del handler (ej. /Leads?pageSize=100),
+   * no la URL completa /api/airtable/Leads.
+   */
   function pathPartsFromRequest() {
     const raw = req.query.slug;
     if (raw) {
       return Array.isArray(raw) ? raw : [raw];
     }
-    const host = req.headers.host || 'localhost';
-    const proto = req.headers['x-forwarded-proto'] || 'https';
-    const url = new URL(req.url || '/', `${proto}://${host}`);
-    const pathname = url.pathname;
-    const prefix = '/api/airtable/';
-    if (!pathname.startsWith(prefix)) return [];
-    const rest = pathname.slice(prefix.length);
-    if (!rest) return [];
-    return rest.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
+    const pathname = (reqUrl.pathname || '/').replace(/\/+$/, '') || '/';
+    const prefix = '/api/airtable';
+    if (pathname.startsWith(`${prefix}/`)) {
+      const rest = pathname.slice(prefix.length + 1);
+      if (!rest) return [];
+      return rest.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
+    }
+    if (pathname === prefix) return [];
+    const trimmed = pathname.replace(/^\/+/, '');
+    if (!trimmed) return [];
+    return trimmed.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
   }
 
   const parts = pathPartsFromRequest();
@@ -35,8 +45,7 @@ export default async function handler(req, res) {
   }
 
   const pathAfterBase = parts.map((p) => encodeURIComponent(p)).join('/');
-  const url = new URL(req.url || '/', 'https://vercel.local');
-  const target = `https://api.airtable.com/v0/${baseId}/${pathAfterBase}${url.search}`;
+  const target = `https://api.airtable.com/v0/${baseId}/${pathAfterBase}${reqUrl.search}`;
 
   const allowed = ['GET', 'POST', 'PATCH', 'DELETE', 'PUT'];
   if (!allowed.includes(req.method)) {
