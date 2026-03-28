@@ -24,7 +24,8 @@ export default async function handler(req, res) {
   function pathPartsFromRequest() {
     const raw = req.query.slug;
     if (raw) {
-      return Array.isArray(raw) ? raw : [raw];
+      if (Array.isArray(raw)) return raw;
+      return String(raw).split('/').filter(Boolean);
     }
     const pathname = (reqUrl.pathname || '/').replace(/\/+$/, '') || '/';
     const prefix = '/api/airtable';
