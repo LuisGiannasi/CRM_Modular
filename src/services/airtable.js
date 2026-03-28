@@ -1,5 +1,16 @@
 const API = '/api/airtable';
 
+/**
+ * Tabla de notas en Airtable. Por defecto `Notas_Leads` vía base64 para que
+ * extensiones de traducción (p. ej. Chrome) no reemplacen el literal en el JS
+ * por "Notes Leads" y rompan la API (422).
+ * Opcional: `VITE_AIRTABLE_TABLE_NOTAS` en .env si tu tabla tiene otro nombre.
+ */
+export const AIRTABLE_TABLE_NOTAS_LEADS =
+  (import.meta.env.VITE_AIRTABLE_TABLE_NOTAS &&
+    String(import.meta.env.VITE_AIRTABLE_TABLE_NOTAS).trim()) ||
+  (typeof atob !== 'undefined' ? atob('Tm90YXNfTGVhZHM=') : 'Notas_Leads');
+
 function errorMessageFromResponse(text, status) {
   if (!text) return `${status} ${status === 404 ? 'No encontrado' : ''}`.trim();
   try {
@@ -82,7 +93,7 @@ export async function fetchNotasByLead(leadId) {
   for (const filterByFormula of formulas) {
     const params = new URLSearchParams({ filterByFormula });
     try {
-      const data = await req(`/${encodeURIComponent('Notas_Leads')}?${params}`);
+      const data = await req(`/${encodeURIComponent(AIRTABLE_TABLE_NOTAS_LEADS)}?${params}`);
       const records = data.records || [];
       records.sort((a, b) => {
         const fa = String(a.fields?.fecha ?? '');

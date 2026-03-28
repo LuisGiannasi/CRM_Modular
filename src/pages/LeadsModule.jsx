@@ -4,6 +4,7 @@ import {
   createRecord,
   updateRecord,
   fetchNotasByLead,
+  AIRTABLE_TABLE_NOTAS_LEADS,
 } from '../services/airtable';
 import {
   ETAPAS,
@@ -260,7 +261,7 @@ export default function LeadsModule() {
     try {
       const titulo = nuevaNota.contenido.trim().slice(0, 80);
       const fecha = new Date().toISOString();
-      await createRecord('Notas_Leads', {
+      await createRecord(AIRTABLE_TABLE_NOTAS_LEADS, {
         nota: titulo,
         contenido: nuevaNota.contenido.trim(),
         tipo: nuevaNota.tipo || 'Observación',
