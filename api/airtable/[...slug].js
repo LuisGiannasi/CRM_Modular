@@ -3,8 +3,10 @@
  * Variables en Vercel (o .env local con `vercel dev`): AIRTABLE_TOKEN, AIRTABLE_BASE_ID
  */
 export default async function handler(req, res) {
-  const token = process.env.AIRTABLE_TOKEN || process.env.AIRTABLE_API_KEY;
-  const baseId = process.env.AIRTABLE_BASE_ID;
+  const token = String(
+    process.env.AIRTABLE_TOKEN || process.env.AIRTABLE_API_KEY || ''
+  ).trim();
+  const baseId = String(process.env.AIRTABLE_BASE_ID || '').trim();
 
   if (!token || !baseId) {
     return res.status(500).json({
@@ -58,9 +60,8 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Ruta inválida' });
   }
 
-  const pathAfterBase = parts
-    .map((p, i) => (i === 0 ? encodeURIComponent(p) : encodeURIComponent(p)))
-    .join('/');
+  /* tbl… y rec… son seguros en path; evitar doble-encoding que a veces rompe el PATCH. */
+  const pathAfterBase = parts.map((p) => String(p).trim()).filter(Boolean).join('/');
   const airtableSearch = req.method === 'GET' ? reqUrl.search : '';
   const target = `https://api.airtable.com/v0/${baseId}/${pathAfterBase}${airtableSearch}`;
 

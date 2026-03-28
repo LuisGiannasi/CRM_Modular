@@ -90,7 +90,8 @@ export async function createRecord(table, fields) {
 }
 
 export async function updateRecord(table, id, fields) {
-  return req(`/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
+  const tid = String(id).trim();
+  return req(`/${encodeURIComponent(table)}/${encodeURIComponent(tid)}`, {
     method: 'PATCH',
     body: JSON.stringify({ fields }),
   });
