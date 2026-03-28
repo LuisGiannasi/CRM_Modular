@@ -1,15 +1,19 @@
 const API = '/api/airtable';
 
+/** Nombres de tabla sin literales legibles (Chrome Translate altera strings y "_" → espacio). */
+const _n = String.fromCharCode;
+export const AIRTABLE_TABLE_LEADS = _n(76, 101, 97, 100, 115); // Leads
+const NOTAS_LEADS_DEFAULT = _n(78, 111, 116, 97, 115, 95, 76, 101, 97, 100, 115); // Notas_Leads
+
 /**
- * Tabla de notas en Airtable. Por defecto `Notas_Leads` vía base64 para que
- * extensiones de traducción (p. ej. Chrome) no reemplacen el literal en el JS
- * por "Notes Leads" y rompan la API (422).
- * Opcional: `VITE_AIRTABLE_TABLE_NOTAS` en .env si tu tabla tiene otro nombre.
+ * Tabla de notas. Opcional: `VITE_AIRTABLE_TABLE_NOTAS` = nombre exacto en Airtable (con guión bajo si aplica).
+ * Si en Vercel pusiste "Notas Leads" con espacio, borrá la variable o corregila a `Notas_Leads`.
  */
-export const AIRTABLE_TABLE_NOTAS_LEADS =
-  (import.meta.env.VITE_AIRTABLE_TABLE_NOTAS &&
-    String(import.meta.env.VITE_AIRTABLE_TABLE_NOTAS).trim()) ||
-  (typeof atob !== 'undefined' ? atob('Tm90YXNfTGVhZHM=') : 'Notas_Leads');
+export const AIRTABLE_TABLE_NOTAS_LEADS = (() => {
+  const raw = import.meta.env.VITE_AIRTABLE_TABLE_NOTAS;
+  if (raw && String(raw).trim()) return String(raw).trim();
+  return NOTAS_LEADS_DEFAULT;
+})();
 
 function errorMessageFromResponse(text, status) {
   if (!text) return `${status} ${status === 404 ? 'No encontrado' : ''}`.trim();

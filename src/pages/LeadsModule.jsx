@@ -4,6 +4,7 @@ import {
   createRecord,
   updateRecord,
   fetchNotasByLead,
+  AIRTABLE_TABLE_LEADS,
   AIRTABLE_TABLE_NOTAS_LEADS,
 } from '../services/airtable';
 import {
@@ -141,7 +142,7 @@ export default function LeadsModule() {
     setError(null);
     setLoading(true);
     try {
-      const list = await fetchAllRecords('Leads');
+      const list = await fetchAllRecords(AIRTABLE_TABLE_LEADS);
       list.sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
       setRecords(list);
     } catch (e) {
@@ -223,7 +224,7 @@ export default function LeadsModule() {
     setError(null);
     try {
       const fields = buildLeadPayload(draft);
-      await updateRecord('Leads', selected.id, fields);
+      await updateRecord(AIRTABLE_TABLE_LEADS, selected.id, fields);
       await loadLeads();
       setSelectedId(selected.id);
     } catch (e) {
@@ -242,7 +243,7 @@ export default function LeadsModule() {
     setError(null);
     try {
       const fields = buildLeadPayload(newDraft);
-      const res = await createRecord('Leads', fields);
+      const res = await createRecord(AIRTABLE_TABLE_LEADS, fields);
       setShowNewModal(false);
       setNewDraft(emptyDraft());
       await loadLeads();
