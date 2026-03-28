@@ -5,8 +5,6 @@
   "outputDirectory": "dist",
   "installCommand": "npm install",
   "functions": {
-    "api/airtable/[...slug].js": {
-      "runtime": "nodejs20.x"
-    }
+    "api/airtable/[...slug].js": {}
   }
 }
