@@ -12,8 +12,24 @@ export default async function handler(req, res) {
     });
   }
 
-  const raw = req.query.slug;
-  const parts = !raw ? [] : Array.isArray(raw) ? raw : [raw];
+  /** Segmentos tras /api/airtable/ (Vercel a veces no rellena req.query.slug en rutas catch-all). */
+  function pathPartsFromRequest() {
+    const raw = req.query.slug;
+    if (raw) {
+      return Array.isArray(raw) ? raw : [raw];
+    }
+    const host = req.headers.host || 'localhost';
+    const proto = req.headers['x-forwarded-proto'] || 'https';
+    const url = new URL(req.url || '/', `${proto}://${host}`);
+    const pathname = url.pathname;
+    const prefix = '/api/airtable/';
+    if (!pathname.startsWith(prefix)) return [];
+    const rest = pathname.slice(prefix.length);
+    if (!rest) return [];
+    return rest.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
+  }
+
+  const parts = pathPartsFromRequest();
   if (parts.length === 0) {
     return res.status(400).json({ error: 'Ruta inválida' });
   }
