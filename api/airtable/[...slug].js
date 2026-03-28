@@ -56,8 +56,11 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Ruta inválida' });
   }
 
-  const pathAfterBase = parts.map((p) => encodeURIComponent(p)).join('/');
-  const target = `https://api.airtable.com/v0/${baseId}/${pathAfterBase}${reqUrl.search}`;
+  const pathAfterBase = parts
+    .map((p, i) => (i === 0 ? encodeURIComponent(p) : encodeURIComponent(p)))
+    .join('/');
+  const airtableSearch = req.method === 'GET' ? reqUrl.search : '';
+  const target = `https://api.airtable.com/v0/${baseId}/${pathAfterBase}${airtableSearch}`;
 
   const allowed = ['GET', 'POST', 'PATCH', 'DELETE', 'PUT'];
   if (!allowed.includes(req.method)) {
