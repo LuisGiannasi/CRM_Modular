@@ -4,7 +4,7 @@ import {
   createRecord,
   updateRecord,
   fetchNotasByLead,
-  AIRTABLE_TABLE_LEADS,
+  AIRTABLE_LEADS_TABLE_API,
   AIRTABLE_TABLE_NOTAS_LEADS,
   AIRTABLE_NOTAS_LINK_FIELD,
 } from '../services/airtable';
@@ -143,7 +143,7 @@ export default function LeadsModule() {
     setError(null);
     setLoading(true);
     try {
-      const list = await fetchAllRecords(AIRTABLE_TABLE_LEADS);
+      const list = await fetchAllRecords(AIRTABLE_LEADS_TABLE_API);
       list.sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
       setRecords(list);
     } catch (e) {
@@ -178,7 +178,7 @@ export default function LeadsModule() {
       if (rows === null) {
         setNotas([]);
         setNotasError(
-          'No se pudieron cargar las notas. Verificá en Airtable el nombre exacto del link a Leads y en .env / Vercel: VITE_AIRTABLE_NOTAS_LINK_FIELD (ej. leads o lead).'
+          'No se pudieron cargar las notas. Verificá en Airtable el nombre exacto del link a Leads y en .env / Vercel: VITE_AIRTABLE_NOTAS_LINK_FIELD (ej. lead o leads).'
         );
         return;
       }
@@ -225,7 +225,7 @@ export default function LeadsModule() {
     setError(null);
     try {
       const fields = buildLeadPayload(draft);
-      await updateRecord(AIRTABLE_TABLE_LEADS, selected.id, fields);
+      await updateRecord(AIRTABLE_LEADS_TABLE_API, selected.id, fields);
       await loadLeads();
       setSelectedId(selected.id);
     } catch (e) {
@@ -244,7 +244,7 @@ export default function LeadsModule() {
     setError(null);
     try {
       const fields = buildLeadPayload(newDraft);
-      const res = await createRecord(AIRTABLE_TABLE_LEADS, fields);
+      const res = await createRecord(AIRTABLE_LEADS_TABLE_API, fields);
       setShowNewModal(false);
       setNewDraft(emptyDraft());
       await loadLeads();
@@ -277,7 +277,7 @@ export default function LeadsModule() {
     } catch (e) {
       setNotasError(
         e.message?.includes('UNKNOWN_FIELD_NAME') || /field/i.test(e.message || '')
-          ? `El nombre del campo link no coincide con Airtable. Configurá VITE_AIRTABLE_NOTAS_LINK_FIELD con el nombre exacto de la columna (ej. leads).`
+          ? `El nombre del campo link no coincide con Airtable. Configurá VITE_AIRTABLE_NOTAS_LINK_FIELD con el nombre exacto de la columna (ej. lead o leads).`
           : e.message || String(e)
       );
     } finally {

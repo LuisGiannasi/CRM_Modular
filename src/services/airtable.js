@@ -1,41 +1,95 @@
 const API = '/api/airtable';
 
-/** ID tabla Leads en la base modular (más estable que el nombre; coincide con la URL de Airtable). */
-const _n = String.fromCharCode;
-const LEADS_TABLE_ID_DEFAULT = 'tbl0cIs2by0wqny4U';
-export const AIRTABLE_TABLE_LEADS =
-  (import.meta.env.VITE_AIRTABLE_TABLE_LEADS_ID && String(import.meta.env.VITE_AIRTABLE_TABLE_LEADS_ID).trim()) ||
-  LEADS_TABLE_ID_DEFAULT;
-const NOTAS_LEADS_DEFAULT = _n(78, 111, 116, 97, 115, 95, 76, 101, 97, 100, 115); // Notas_Leads
+/** Nombre de la tabla Leads en Airtable. Opcional: `VITE_AIRTABLE_TABLE_LEADS` si el nombre difiere. Si alguien puso un ID tbl… por error, se ignora y se usa Leads. */
+export const AIRTABLE_TABLE_LEADS = (() => {
+  const raw = import.meta.env.VITE_AIRTABLE_TABLE_LEADS;
+  if (raw && String(raw).trim()) {
+    const t = String(raw).trim();
+    if (/^tbl[a-z0-9]{10,}$/i.test(t)) return 'Leads';
+    return t;
+  }
+  return 'Leads';
+})();
+const NOTAS_LEADS_TABLE_ID_DEFAULT = 'tble7Gy290bQ7O8Z1';
+/** Copiado de la URL de Airtable: …/app…/tblXXXXXXXXXXXXXX/… — 17 caracteres: tbl + 14 alfanuméricos. */
+const KNOWN_LEADS_TABLE_ID = 'tbl0cIs2by0wqny4U';
 
 /**
- * Tabla de notas. Opcional: `VITE_AIRTABLE_TABLE_NOTAS` = nombre exacto en Airtable (con guión bajo si aplica).
- * Si en Vercel pusiste "Notas Leads" con espacio, borrá la variable o corregila a `Notas_Leads`.
+ * Segmento de URL hacia Airtable para la tabla Leads.
+ * Si en Vercel `VITE_AIRTABLE_LEADS_TABLE_API` tiene un typo (I vs l, 0 vs O), POST/PATCH devuelven 404: borrá la variable o pegá el id exacto desde la barra del navegador en Airtable.
+ */
+export const AIRTABLE_LEADS_TABLE_API = (() => {
+  const raw = import.meta.env.VITE_AIRTABLE_LEADS_TABLE_API;
+  if (raw && String(raw).trim()) {
+    const t = String(raw).trim();
+    if (/^tbl[a-zA-Z0-9]{14}$/.test(t)) return t;
+  }
+  return KNOWN_LEADS_TABLE_ID;
+})();
+
+/** rec + 14 caracteres; elimina espacios o caracteres raros pegados al copiar. */
+function normalizeRecordId(id) {
+  const s = String(id || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+  const m = s.match(/rec[a-zA-Z0-9]{14}/i);
+  return m ? m[0] : s;
+}
+
+/** Evita env errónea tipo `Notas` o `Notas Leads` (la tabla real es Notas_Leads / tble…). */
+function normalizeNotasTableForApi(raw) {
+  if (raw == null || !String(raw).trim()) return NOTAS_LEADS_TABLE_ID_DEFAULT;
+  const t = String(raw).trim();
+  if (/^notas$/i.test(t)) return NOTAS_LEADS_TABLE_ID_DEFAULT;
+  if (/^notas\s+leads$/i.test(t)) return 'Notas_Leads';
+  return t;
+}
+
+/** Si en Vercel pegaron `{leads}` o basura, la fórmula rompe (422). Solo identificador Airtable. */
+function sanitizeNotasLinkFieldName(raw) {
+  let s = String(raw ?? '').trim();
+  if (!s) return '';
+  s = s.replace(/^\{+/, '').replace(/\}+$/g, '').trim();
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(s)) return '';
+  return s;
+}
+
+/** Leads por nombre o por ID conocido → siempre el segmento API (tbl…). */
+function resolveTableSegmentForApi(table) {
+  const t = String(table).trim();
+  if (!t) return t;
+  if (t === 'Leads' || t.toLowerCase() === KNOWN_LEADS_TABLE_ID.toLowerCase()) {
+    return AIRTABLE_LEADS_TABLE_API;
+  }
+  return t;
+}
+
+/**
+ * Tabla Notas en la API (Airtable acepta nombre o ID `tbl…` / `tble…`).
+ * Por defecto: ID del esquema exportado (evita confusiones Notas_Leads vs "Notas Leads").
  */
 export const AIRTABLE_TABLE_NOTAS_LEADS = (() => {
-  const raw = import.meta.env.VITE_AIRTABLE_TABLE_NOTAS;
-  if (raw && String(raw).trim()) return String(raw).trim();
-  return NOTAS_LEADS_DEFAULT;
+  return normalizeNotasTableForApi(import.meta.env.VITE_AIRTABLE_TABLE_NOTAS);
 })();
 
 /**
- * Nombre del campo link en Notas_Leads → Leads (debe coincidir con Airtable).
- * Por defecto `lead` (script 07). Si creaste la columna como `leads`, en .env y Vercel:
- * VITE_AIRTABLE_NOTAS_LINK_FIELD=leads
+ * Nombre del campo link en Notas_Leads → Leads (debe coincidir exactamente con Airtable).
+ * Por defecto `lead` (script 07 y muchas bases). Si tu columna se llama `leads`, en Vercel: VITE_AIRTABLE_NOTAS_LINK_FIELD=leads
  */
 export const AIRTABLE_NOTAS_LINK_FIELD = (() => {
-  const raw = import.meta.env.VITE_AIRTABLE_NOTAS_LINK_FIELD;
-  if (raw && String(raw).trim()) return String(raw).trim();
-  return _n(108, 101, 97, 100); // lead
+  const fromEnv = sanitizeNotasLinkFieldName(import.meta.env.VITE_AIRTABLE_NOTAS_LINK_FIELD);
+  if (fromEnv) return fromEnv;
+  return 'lead';
 })();
 
 function errorMessageFromResponse(text, status) {
   if (!text) return `${status} ${status === 404 ? 'No encontrado' : ''}`.trim();
   try {
     const j = JSON.parse(text);
-    if (j.error?.message) return j.error.message;
-    if (typeof j.error === 'string') return j.error;
-    if (j.error?.type) return j.error.type;
+    const err = j.error;
+    if (typeof err === 'string') return err;
+    if (err && typeof err === 'object') {
+      const msg = [err.type, err.message].filter(Boolean).join(': ');
+      if (msg) return msg;
+    }
   } catch {
     /* HTML o texto plano (p. ej. página NOT_FOUND de Vercel) */
   }
@@ -65,6 +119,7 @@ async function req(path, options = {}) {
  * @param {Record<string, string>} query querystring params (ej. sort, filterByFormula)
  */
 export async function fetchAllRecords(table, query = {}) {
+  const tbl = resolveTableSegmentForApi(table);
   const out = [];
   let offset;
   for (;;) {
@@ -73,7 +128,7 @@ export async function fetchAllRecords(table, query = {}) {
       if (v !== undefined && v !== null) params.append(k, String(v));
     });
     if (offset) params.set('offset', offset);
-    const path = `/${encodeURIComponent(table)}?${params}`;
+    const path = `/${encodeURIComponent(tbl)}?${params}`;
     const data = await req(path);
     out.push(...(data.records || []));
     offset = data.offset;
@@ -83,31 +138,65 @@ export async function fetchAllRecords(table, query = {}) {
 }
 
 export async function createRecord(table, fields) {
-  return req(`/${encodeURIComponent(table)}`, {
+  const tbl = resolveTableSegmentForApi(table);
+  return req(`/${encodeURIComponent(tbl)}`, {
     method: 'POST',
-    body: JSON.stringify({ fields }),
+    body: JSON.stringify({ fields, typecast: true }),
   });
 }
 
 export async function updateRecord(table, id, fields) {
-  const tid = String(id).trim();
-  return req(`/${encodeURIComponent(table)}/${encodeURIComponent(tid)}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ fields }),
-  });
+  const tbl = resolveTableSegmentForApi(table);
+  const tid = normalizeRecordId(id);
+  const body = JSON.stringify({ fields, typecast: true });
+  const run = (segment) =>
+    req(`/${encodeURIComponent(segment)}/${encodeURIComponent(tid)}`, {
+      method: 'PATCH',
+      body,
+    });
+  try {
+    return await run(tbl);
+  } catch (e) {
+    const msg = String(e.message || '');
+    const is404 = /404|NOT_FOUND|not found|No encontrado/i.test(msg);
+    if (
+      is404 &&
+      tbl === AIRTABLE_LEADS_TABLE_API &&
+      /^tbl[a-zA-Z0-9]{14}$/.test(tbl)
+    ) {
+      try {
+        return await run('Leads');
+      } catch {
+        throw e;
+      }
+    }
+    throw e;
+  }
 }
 
 export async function fetchNotasByLead(leadId) {
-  const formula = `FIND('${leadId.replace(/'/g, "\\'")}', ARRAYJOIN({lead}))`;
-  const params = new URLSearchParams({
-    filterByFormula: formula,
+  const rid = String(leadId || '').trim();
+  if (!/^rec[a-zA-Z0-9]{8,}$/i.test(rid)) return [];
+  const linkField = AIRTABLE_NOTAS_LINK_FIELD;
+  const esc = rid.replace(/'/g, "\\'");
+  /** Link a un solo lead: comparación directa suele ir bien; si no, FIND+ARRAYJOIN. */
+  const formulas = [
+    `{${linkField}} = '${esc}'`,
+    `FIND('${esc}', ARRAYJOIN({${linkField}}))`,
+  ];
+  const sort = {
     'sort[0][field]': 'fecha',
     'sort[0][direction]': 'desc',
-  });
-  try {
-    const data = await req(`/${encodeURIComponent('Notas_Leads')}?${params}`);
-    return data.records || [];
-  } catch {
-    return null;
+  };
+  const table = encodeURIComponent(AIRTABLE_TABLE_NOTAS_LEADS);
+  for (const formula of formulas) {
+    const params = new URLSearchParams({ filterByFormula: formula, ...sort });
+    try {
+      const data = await req(`/${table}?${params}`);
+      return data.records || [];
+    } catch {
+      /* probá la siguiente fórmula */
+    }
   }
+  return null;
 }
