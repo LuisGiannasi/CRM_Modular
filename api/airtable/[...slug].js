@@ -70,6 +70,17 @@ export default async function handler(req, res) {
   }
 
   let parts = pathPartsFromRequest();
+  /** Ruta explícita `api/airtable/[table]/[recordId].js`: Vercel pasa query.table y query.recordId. */
+  if (
+    (!parts.length || parts.length < 2) &&
+    req.query?.table != null &&
+    req.query?.recordId != null
+  ) {
+    parts = [
+      decodeURIComponent(String(req.query.table).trim()),
+      decodeURIComponent(String(req.query.recordId).trim()),
+    ].filter(Boolean);
+  }
   /** Mismo segmento que el front: ID tbl… de Leads (Airtable es más estable por ID). */
   const LEADS_TBL_ID = 'tbl0cIs2by0wqny4U';
   const leadsTableSegment = String(process.env.AIRTABLE_TABLE_LEADS || LEADS_TBL_ID).trim() || LEADS_TBL_ID;
@@ -108,9 +119,24 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Ruta inválida' });
   }
 
-  if (['PATCH', 'DELETE', 'PUT'].includes(req.method) && parts.length < 2) {
+  /**
+   * PATCH a un solo segmento es válido para la API de Airtable “update records”
+   * (body: { records: [{ id, fields }, …] }). El front usa eso para guardar leads.
+   * PATCH/PUT/DELETE con un solo segmento y sin `records` sigue siendo inválido.
+   */
+  const bodyObj =
+    req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body) ? req.body : null;
+  const isBatchPatch =
+    req.method === 'PATCH' &&
+    bodyObj &&
+    Array.isArray(bodyObj.records) &&
+    bodyObj.records.length > 0;
+
+  if (['PATCH', 'DELETE', 'PUT'].includes(req.method) && parts.length < 2 && !isBatchPatch) {
     return res.status(400).json({
-      error: 'Faltan segmentos: se necesita /api/airtable/{tabla}/{recordId}',
+      error:
+        'Ruta inválida: PATCH por registro necesita /api/airtable/{tabla}/{recordId}; ' +
+        'o PATCH a /api/airtable/{tabla} con body { records: [{ id, fields }] }',
       parts,
       pathname: reqUrl.pathname,
     });
