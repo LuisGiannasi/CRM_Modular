@@ -28,6 +28,18 @@ node scripts/airtable-schema/07-link-notas-lead.js
 
 (Ese script crea el campo link `lead` en `Notas_Leads`.)
 
+### Campos extra en Leads (flujo tipo Motores Pesados)
+
+Desde la raíz del monorepo `extensions`, con `.env` que tenga `AIRTABLE_TOKEN` y `AIRTABLE_BASE_ID`:
+
+```bash
+node scripts/airtable-schema/08-campos-leads-motores.js
+```
+
+Crea en **Leads**: `nota_inicial`, `ultima_interaccion`, `ultimo_contacto`, `fecha_modificacion_app`, `fecha_ganado`, `estado_conversion`, fechas de conversión, `cliente_creado`, links opcionales a **Especialistas** / **Clientes** / **Ordenes_Trabajo** (si esas tablas existen en la base). El CRM Modular actualiza interacción y conversión al mover tarjetas en el Kanban y al posponer.
+
+Opcional en `.env`: `VITE_ESPECIALISTA_RECORD_ID` (un `rec…` de la tabla Especialistas) para rellenar `vendedor` y campos de auditoría al guardar.
+
 ## Subir a GitHub
 
 1. En [github.com](https://github.com) creá un repositorio **vacío** (sin README ni `.gitignore` automáticos, o después fusioná).

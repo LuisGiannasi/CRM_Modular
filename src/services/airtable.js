@@ -80,6 +80,42 @@ export const AIRTABLE_NOTAS_LINK_FIELD = (() => {
   return 'lead';
 })();
 
+/**
+ * Record ID `rec…` del comercial en tabla Especialistas (opcional).
+ * Si está definido, el Kanban y altas rellenan vendedor / audit links cuando existen en la base.
+ */
+export const ESPECIALISTA_RECORD_ID = (() => {
+  const raw = import.meta.env.VITE_ESPECIALISTA_RECORD_ID;
+  const t = String(raw ?? '').trim();
+  const m = t.match(/rec[a-zA-Z0-9]{14}/i);
+  return m ? normalizeRecordId(m[0]) : '';
+})();
+
+export function especialistaIdsForPatch() {
+  return ESPECIALISTA_RECORD_ID ? [ESPECIALISTA_RECORD_ID] : null;
+}
+
+/** Campos link a Especialistas según la nueva etapa (misma idea que Motores Pesados). */
+export function leadEtapaAssignPatch(etapaNueva) {
+  const ids = especialistaIdsForPatch();
+  if (!etapaNueva || !ids) return {};
+  const p = { modificado_por_app: ids, vendedor: ids };
+  if (etapaNueva === 'Contactado') p.contactado_por = ids;
+  if (etapaNueva === 'En gestión') p.en_proceso_por = ids;
+  if (etapaNueva === 'Ganado') p.ganado_por = ids;
+  if (etapaNueva === 'Perdido') p.perdido_por = ids;
+  return p;
+}
+
+export function leadInteractionTouchPatch() {
+  const now = new Date();
+  return {
+    ultima_interaccion: now.toISOString().split('T')[0],
+    ultimo_contacto: now.toISOString(),
+    fecha_modificacion_app: now.toISOString(),
+  };
+}
+
 function errorMessageFromResponse(text, status) {
   if (!text) return `${status} ${status === 404 ? 'No encontrado' : ''}`.trim();
   try {
@@ -142,6 +178,25 @@ export async function createRecord(table, fields) {
   return req(`/${encodeURIComponent(tbl)}`, {
     method: 'POST',
     body: JSON.stringify({ fields, typecast: true }),
+  });
+}
+
+/**
+ * Crea una fila en Notas_Leads vinculada al lead (mismo shape que el formulario de notas).
+ */
+export async function appendNotaLead(leadId, { contenido, tipo = 'Observación', autor_nombre = '—' }) {
+  const text = String(contenido ?? '').trim();
+  if (!text) throw new Error('La nota no puede estar vacía.');
+  const rid = normalizeRecordId(leadId);
+  const titulo = text.slice(0, 80);
+  const fecha = new Date().toISOString();
+  return createRecord(AIRTABLE_TABLE_NOTAS_LEADS, {
+    nota: titulo,
+    contenido: text,
+    tipo: tipo || 'Observación',
+    fecha,
+    autor_nombre: String(autor_nombre ?? '—').trim() || '—',
+    [AIRTABLE_NOTAS_LINK_FIELD]: [rid],
   });
 }
 

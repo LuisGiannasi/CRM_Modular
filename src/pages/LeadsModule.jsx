@@ -4,6 +4,10 @@ import {
   createRecord,
   updateRecord,
   fetchNotasByLead,
+  appendNotaLead,
+  leadEtapaAssignPatch,
+  leadInteractionTouchPatch,
+  especialistaIdsForPatch,
   AIRTABLE_LEADS_TABLE_API,
   AIRTABLE_TABLE_NOTAS_LEADS,
   AIRTABLE_NOTAS_LINK_FIELD,
@@ -36,6 +40,16 @@ const LEAD_FIELD_KEYS = [
   'modelo_motor',
   'observaciones',
   'proceso_incompleto',
+  'nota_inicial',
+];
+
+const MOTIVOS_PERDIDA_RAPIDOS = [
+  'No hubo respuesta',
+  'Eligió otro proveedor',
+  'Precio',
+  'No es prioridad ahora',
+  'No encaja con la necesidad',
+  'Otro',
 ];
 
 function formatDisplayDate(iso) {
@@ -97,6 +111,7 @@ function emptyDraft() {
     modelo_motor: '',
     observaciones: '',
     proceso_incompleto: false,
+    nota_inicial: '',
   };
 }
 
@@ -120,6 +135,7 @@ function recordToDraft(record) {
     modelo_motor: f.modelo_motor ?? '',
     observaciones: f.observaciones ?? '',
     proceso_incompleto: Boolean(f.proceso_incompleto),
+    nota_inicial: f.nota_inicial ?? '',
   };
 }
 
@@ -138,6 +154,18 @@ export default function LeadsModule() {
   const [notasError, setNotasError] = useState(null);
   const [nuevaNota, setNuevaNota] = useState({ contenido: '', tipo: 'Observación', autor_nombre: '' });
   const [savingNota, setSavingNota] = useState(false);
+  /** @type {'table' | 'kanban'} */
+  const [listViewMode, setListViewMode] = useState('table');
+  const [draggingLeadId, setDraggingLeadId] = useState(null);
+  /** @type {{ leadId: string; nombre: string; etapaPrev: string; etapaNueva: string } | null} */
+  const [etapaModal, setEtapaModal] = useState(null);
+  const [notaEtapaTexto, setNotaEtapaTexto] = useState('');
+  const [motivoPerdidaKanban, setMotivoPerdidaKanban] = useState('');
+  const [savingEtapa, setSavingEtapa] = useState(false);
+  /** @type {{ leadId: string; nombre: string } | null} */
+  const [posponerModal, setPosponerModal] = useState(null);
+  const [posponerMotivo, setPosponerMotivo] = useState('');
+  const [savingPosponer, setSavingPosponer] = useState(false);
 
   const loadLeads = useCallback(async () => {
     setError(null);
@@ -203,12 +231,49 @@ export default function LeadsModule() {
         f.marca_motor,
         f.modelo_motor,
         f.observaciones,
+        f.nota_inicial,
       ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
       return blob.includes(q);
     });
+  }, [records, search, filtroEtapa]);
+
+  const leadsByEtapa = useMemo(() => {
+    const map = Object.fromEntries(ETAPAS.map((e) => [e, []]));
+    const q = search.trim().toLowerCase();
+    for (const r of records) {
+      const f = r.fields || {};
+      if (filtroEtapa && f.etapa !== filtroEtapa) continue;
+      if (q) {
+        const blob = [
+          f.nombre,
+          f.apellido,
+          f.telefono,
+          f.email,
+          f.marca_motor,
+          f.modelo_motor,
+          f.observaciones,
+          f.nota_inicial,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (!blob.includes(q)) continue;
+      }
+      const et = f.etapa && ETAPAS.includes(f.etapa) ? f.etapa : 'Nuevo';
+      if (!map[et]) map[et] = [];
+      map[et].push(r);
+    }
+    for (const e of ETAPAS) {
+      map[e].sort((a, b) => {
+        const ta = new Date(a.createdTime || 0).getTime();
+        const tb = new Date(b.createdTime || 0).getTime();
+        return ta - tb;
+      });
+    }
+    return map;
   }, [records, search, filtroEtapa]);
 
   const onSelectRow = (id) => {
@@ -225,6 +290,11 @@ export default function LeadsModule() {
     setError(null);
     try {
       const fields = buildLeadPayload(draft);
+      const esp = especialistaIdsForPatch();
+      if (esp) {
+        fields.modificado_por_app = esp;
+        fields.fecha_modificacion_app = new Date().toISOString();
+      }
       await updateRecord(AIRTABLE_LEADS_TABLE_API, selected.id, fields);
       await loadLeads();
       setSelectedId(selected.id);
@@ -244,6 +314,13 @@ export default function LeadsModule() {
     setError(null);
     try {
       const fields = buildLeadPayload(newDraft);
+      const esp = especialistaIdsForPatch();
+      if (esp) {
+        fields.creado_por = esp;
+        fields.modificado_por_app = esp;
+        fields.vendedor = esp;
+        fields.fecha_modificacion_app = new Date().toISOString();
+      }
       const res = await createRecord(AIRTABLE_LEADS_TABLE_API, fields);
       setShowNewModal(false);
       setNewDraft(emptyDraft());
@@ -261,6 +338,7 @@ export default function LeadsModule() {
     setSavingNota(true);
     setNotasError(null);
     try {
+      const hadRevisar = !!(selected.fields && selected.fields.revisar_despues);
       const titulo = nuevaNota.contenido.trim().slice(0, 80);
       const fecha = new Date().toISOString();
       await createRecord(AIRTABLE_TABLE_NOTAS_LEADS, {
@@ -271,9 +349,13 @@ export default function LeadsModule() {
         autor_nombre: nuevaNota.autor_nombre.trim() || '—',
         [AIRTABLE_NOTAS_LINK_FIELD]: [selected.id],
       });
+      const touchPatch = { ...leadInteractionTouchPatch() };
+      if (hadRevisar) touchPatch.revisar_despues = null;
+      await updateRecord(AIRTABLE_LEADS_TABLE_API, selected.id, touchPatch);
       setNuevaNota({ contenido: '', tipo: 'Observación', autor_nombre: nuevaNota.autor_nombre });
       const rows = await fetchNotasByLead(selected.id);
       setNotas(rows || []);
+      await loadLeads();
     } catch (e) {
       setNotasError(
         e.message?.includes('UNKNOWN_FIELD_NAME') || /field/i.test(e.message || '')
@@ -284,6 +366,134 @@ export default function LeadsModule() {
       setSavingNota(false);
     }
   };
+
+  function leadDisplayName(r) {
+    const f = r.fields || {};
+    return [f.nombre, f.apellido].filter(Boolean).join(' ') || 'Sin nombre';
+  }
+
+  function handleKanbanDragStart(e, r) {
+    const f = r.fields || {};
+    setDraggingLeadId(r.id);
+    e.dataTransfer.setData(
+      'application/json',
+      JSON.stringify({ leadId: r.id, etapa: f.etapa || 'Nuevo' })
+    );
+    e.dataTransfer.effectAllowed = 'move';
+  }
+
+  function handleKanbanDragEnd() {
+    setDraggingLeadId(null);
+  }
+
+  function handleKanbanDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }
+
+  function handleKanbanDrop(e, etapaColumna) {
+    e.preventDefault();
+    let data;
+    try {
+      data = JSON.parse(e.dataTransfer.getData('application/json') || '{}');
+    } catch {
+      return;
+    }
+    if (!data.leadId || data.etapa === etapaColumna) return;
+    const r = records.find((x) => x.id === data.leadId);
+    if (!r) return;
+    setEtapaModal({
+      leadId: data.leadId,
+      nombre: leadDisplayName(r),
+      etapaPrev: data.etapa || 'Nuevo',
+      etapaNueva: etapaColumna,
+    });
+    setNotaEtapaTexto('');
+    setMotivoPerdidaKanban('');
+  }
+
+  async function confirmCambioEtapaKanban() {
+    if (!etapaModal) return;
+    const { leadId, etapaNueva } = etapaModal;
+    if (etapaNueva === 'Perdido') {
+      if (!motivoPerdidaKanban.trim()) {
+        setError('Elegí o escribí un motivo de pérdida.');
+        return;
+      }
+    } else if (!notaEtapaTexto.trim()) {
+      setError('La nota es obligatoria para registrar el cambio de etapa.');
+      return;
+    }
+    setSavingEtapa(true);
+    setError(null);
+    try {
+      const notaCompleto =
+        etapaNueva === 'Perdido'
+          ? `Cambio a ${etapaNueva}. Motivo: ${motivoPerdidaKanban.trim()}.${notaEtapaTexto.trim() ? ` Notas: ${notaEtapaTexto.trim()}` : ''}`
+          : `Cambio a ${etapaNueva}: ${notaEtapaTexto.trim()}`;
+      await appendNotaLead(leadId, {
+        contenido: notaCompleto,
+        tipo: 'Observación',
+        autor_nombre: nuevaNota.autor_nombre?.trim() || '—',
+      });
+      const patch = {
+        etapa: etapaNueva,
+        ...leadInteractionTouchPatch(),
+        ...leadEtapaAssignPatch(etapaNueva),
+      };
+      if (etapaNueva === 'Perdido') patch.motivo_perdida = motivoPerdidaKanban.trim();
+      if (etapaNueva === 'Ganado' || etapaNueva === 'Perdido') patch.revisar_despues = null;
+      if (etapaNueva === 'Ganado') {
+        const hoy = new Date().toISOString();
+        patch.fecha_ganado = hoy;
+        patch.estado_conversion = 'pendiente';
+        patch.fecha_inicio_conversion = hoy;
+        patch.fecha_fin_conversion = null;
+      }
+      await updateRecord(AIRTABLE_LEADS_TABLE_API, leadId, patch);
+      setEtapaModal(null);
+      setNotaEtapaTexto('');
+      setMotivoPerdidaKanban('');
+      await loadLeads();
+      if (selectedId === leadId) {
+        setDraft((d) => ({ ...d, etapa: etapaNueva, motivo_perdida: patch.motivo_perdida ?? d.motivo_perdida }));
+      }
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setSavingEtapa(false);
+    }
+  }
+
+  async function confirmPosponer24h() {
+    if (!posponerModal || !posponerMotivo.trim()) return;
+    setSavingPosponer(true);
+    setError(null);
+    try {
+      const { leadId } = posponerModal;
+      const until = new Date();
+      until.setHours(until.getHours() + 24);
+      await appendNotaLead(leadId, {
+        contenido: `Pospuesto 24h: ${posponerMotivo.trim()}`,
+        tipo: 'Observación',
+        autor_nombre: nuevaNota.autor_nombre?.trim() || '—',
+      });
+      await updateRecord(AIRTABLE_LEADS_TABLE_API, leadId, {
+        revisar_despues: until.toISOString(),
+        ...leadInteractionTouchPatch(),
+      });
+      setPosponerModal(null);
+      setPosponerMotivo('');
+      await loadLeads();
+      if (selectedId === leadId) {
+        setDraft((d) => ({ ...d, revisar_despues: toDatetimeLocalValue(until.toISOString()) }));
+      }
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setSavingPosponer(false);
+    }
+  }
 
   const renderSelect = (key, label, options, optional = true) => (
     <label key={key}>
@@ -306,7 +516,9 @@ export default function LeadsModule() {
     <>
       <header className="app-header">
         <h1>CRM Modular — Módulo 1 · Leads</h1>
-        <p>Listado, alta y edición contra la tabla Leads de Airtable (el token solo en el servidor: Vite en local o función en Vercel).</p>
+        <p>
+          Listado, Kanban y edición contra la tabla Leads. Tras correr el script de esquema 08, también se registran seguimiento (última interacción) y datos de conversión al ganar un lead. Token solo en servidor (Vite proxy o Vercel).
+        </p>
       </header>
 
       <div className="layout">
@@ -314,6 +526,22 @@ export default function LeadsModule() {
           {error && !loading && <div className="error-banner">{error}</div>}
 
           <div className="toolbar">
+            <div className="toolbar-segment" role="group" aria-label="Vista">
+              <button
+                type="button"
+                className={listViewMode === 'table' ? 'active' : ''}
+                onClick={() => setListViewMode('table')}
+              >
+                Lista
+              </button>
+              <button
+                type="button"
+                className={listViewMode === 'kanban' ? 'active' : ''}
+                onClick={() => setListViewMode('kanban')}
+              >
+                Kanban
+              </button>
+            </div>
             <input
               type="search"
               placeholder="Buscar por nombre, teléfono, email…"
@@ -343,6 +571,78 @@ export default function LeadsModule() {
 
           {loading ? (
             <div className="loading">Cargando leads…</div>
+          ) : listViewMode === 'kanban' ? (
+            records.length === 0 ? (
+              <div className="empty-state">No hay leads cargados. Usá «Nuevo lead» o «Actualizar» tras crear datos en Airtable.</div>
+            ) : (
+            <div className="kanban-board">
+              {ETAPAS.map((etapa) => {
+                const col = leadsByEtapa[etapa] || [];
+                const st = etapaBadgeStyle(etapa);
+                return (
+                  <div
+                    key={etapa}
+                    className="kanban-column"
+                    onDragOver={handleKanbanDragOver}
+                    onDrop={(e) => handleKanbanDrop(e, etapa)}
+                    style={{ borderColor: st.color || 'var(--border)' }}
+                  >
+                    <div className="kanban-column-header" style={{ color: st.color, borderBottomColor: st.color }}>
+                      <span>{etapa}</span>
+                      <span className="count">{col.length}</span>
+                    </div>
+                    <div className="kanban-cards">
+                      {col.map((r) => {
+                        const f = r.fields || {};
+                        const rev = f.revisar_despues ? new Date(f.revisar_despues).getTime() : 0;
+                        const pospuesto = rev > Date.now();
+                        return (
+                          <div key={r.id} style={{ position: 'relative' }}>
+                            <button
+                              type="button"
+                              draggable
+                              className={`kanban-card ${r.id === selectedId ? 'selected' : ''} ${draggingLeadId === r.id ? 'dragging' : ''}`}
+                              onDragStart={(e) => handleKanbanDragStart(e, r)}
+                              onDragEnd={handleKanbanDragEnd}
+                              onClick={() => onSelectRow(r.id)}
+                            >
+                              <h4>{leadDisplayName(r)}</h4>
+                              {f.nota_inicial && (
+                                <p className="kanban-card-meta kanban-card-snippet">{f.nota_inicial}</p>
+                              )}
+                              {f.telefono && <p className="kanban-card-meta">Tel. {f.telefono}</p>}
+                              {f.origen && <p className="kanban-card-meta">Origen: {f.origen}</p>}
+                              {pospuesto && (
+                                <p className="kanban-card-meta" style={{ color: '#fbbf24' }}>
+                                  Revisar {formatDisplayDate(f.revisar_despues)}
+                                </p>
+                              )}
+                              <p className="kanban-card-meta">Creado {formatDisplayDate(r.createdTime)}</p>
+                            </button>
+                            <div className="kanban-card-actions">
+                              {(f.etapa === 'Contactado' || f.etapa === 'En gestión') && (
+                                <button
+                                  type="button"
+                                  className="secondary"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPosponerModal({ leadId: r.id, nombre: leadDisplayName(r) });
+                                    setPosponerMotivo('');
+                                  }}
+                                >
+                                  Posponer 24h
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            )
           ) : filtered.length === 0 ? (
             <div className="empty-state">No hay leads que coincidan con los filtros.</div>
           ) : (
@@ -482,6 +782,14 @@ export default function LeadsModule() {
                     onChange={(e) => setDraft((d) => ({ ...d, observaciones: e.target.value }))}
                   />
                 </label>
+                <label>
+                  Nota inicial (ingreso)
+                  <textarea
+                    value={draft.nota_inicial}
+                    onChange={(e) => setDraft((d) => ({ ...d, nota_inicial: e.target.value }))}
+                    placeholder="Contexto del primer contacto o captura del formulario…"
+                  />
+                </label>
                 <label style={{ flexDirection: 'row', alignItems: 'center', gap: '0.5rem' }}>
                   <input
                     type="checkbox"
@@ -561,6 +869,125 @@ export default function LeadsModule() {
         </aside>
       </div>
 
+      {etapaModal && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(e) => e.target === e.currentTarget && !savingEtapa && setEtapaModal(null)}
+        >
+          <div className="modal" role="dialog" aria-labelledby="etapa-modal-title" onClick={(e) => e.stopPropagation()}>
+            <h2 id="etapa-modal-title">Cambio a {etapaModal.etapaNueva}</h2>
+            <p className="hint">
+              <strong>{etapaModal.nombre}</strong> pasa de «{etapaModal.etapaPrev}» a «{etapaModal.etapaNueva}». Quedará registrado en Notas_Leads.
+            </p>
+            {etapaModal.etapaNueva === 'Perdido' ? (
+              <>
+                <p className="hint" style={{ color: 'var(--text)', fontWeight: 600 }}>
+                  Motivo de pérdida (obligatorio)
+                </p>
+                <div className="chip-row">
+                  {MOTIVOS_PERDIDA_RAPIDOS.map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      className={motivoPerdidaKanban === m ? 'active' : ''}
+                      onClick={() => setMotivoPerdidaKanban(m)}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <label>
+                  Detalle u otro motivo
+                  <input
+                    value={motivoPerdidaKanban}
+                    onChange={(e) => setMotivoPerdidaKanban(e.target.value)}
+                    placeholder="Completá o editá el motivo…"
+                    style={{ width: '100%', marginTop: '0.35rem' }}
+                  />
+                </label>
+                <label>
+                  Notas adicionales (opcional)
+                  <textarea
+                    value={notaEtapaTexto}
+                    onChange={(e) => setNotaEtapaTexto(e.target.value)}
+                    rows={3}
+                    placeholder="Aclaraciones…"
+                    style={{ width: '100%', marginTop: '0.35rem' }}
+                  />
+                </label>
+              </>
+            ) : (
+              <label>
+                Nota del cambio (obligatorio)
+                <textarea
+                  value={notaEtapaTexto}
+                  onChange={(e) => setNotaEtapaTexto(e.target.value)}
+                  rows={4}
+                  placeholder="Ej. llamé, acordamos enviar presupuesto…"
+                  autoFocus
+                  style={{ width: '100%', marginTop: '0.35rem' }}
+                />
+              </label>
+            )}
+            <div className="form-actions">
+              <button type="button" className="secondary" disabled={savingEtapa} onClick={() => setEtapaModal(null)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={
+                  savingEtapa ||
+                  (etapaModal.etapaNueva === 'Perdido' ? !motivoPerdidaKanban.trim() : !notaEtapaTexto.trim())
+                }
+                onClick={confirmCambioEtapaKanban}
+              >
+                {savingEtapa ? 'Guardando…' : 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {posponerModal && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(e) => e.target === e.currentTarget && !savingPosponer && setPosponerModal(null)}
+        >
+          <div className="modal" role="dialog" aria-labelledby="posponer-modal-title" onClick={(e) => e.stopPropagation()}>
+            <h2 id="posponer-modal-title">Posponer 24 h</h2>
+            <p className="hint">
+              <strong>{posponerModal.nombre}</strong> — se actualizará «Revisar después» y se agregará una nota. Motivo obligatorio.
+            </p>
+            <label>
+              Motivo
+              <textarea
+                value={posponerMotivo}
+                onChange={(e) => setPosponerMotivo(e.target.value)}
+                rows={3}
+                placeholder="Ej. no atiende, reintentar mañana…"
+                autoFocus
+                style={{ width: '100%', marginTop: '0.35rem' }}
+              />
+            </label>
+            <div className="form-actions">
+              <button
+                type="button"
+                className="secondary"
+                disabled={savingPosponer}
+                onClick={() => setPosponerModal(null)}
+              >
+                Cancelar
+              </button>
+              <button type="button" disabled={!posponerMotivo.trim() || savingPosponer} onClick={confirmPosponer24h}>
+                {savingPosponer ? 'Guardando…' : 'Posponer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showNewModal && (
         <div
           className="modal-backdrop"
@@ -625,6 +1052,15 @@ export default function LeadsModule() {
                     </option>
                   ))}
                 </select>
+              </label>
+              <label>
+                Nota inicial
+                <textarea
+                  value={newDraft.nota_inicial}
+                  onChange={(e) => setNewDraft((d) => ({ ...d, nota_inicial: e.target.value }))}
+                  placeholder="Opcional: contexto del contacto, consulta…"
+                  rows={3}
+                />
               </label>
             </div>
             <div className="form-actions">
