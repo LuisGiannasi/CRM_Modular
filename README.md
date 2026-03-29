@@ -28,13 +28,22 @@ node scripts/airtable-schema/07-link-notas-lead.js
 
 (Ese script crea el campo link `lead` en `Notas_Leads`.)
 
-### Campos extra en Leads (flujo tipo Motores Pesados)
+### Esquema de etapa y posponer (base propia del Modular)
+
+El **CRM Modular** usa su **propia base** de Airtable (independiente de la del CRM Motores Pesados). Los nombres de campo y de opciones no tienen que coincidir entre sistemas; en esta app conviene usar:
+
+- Etapa intermedia **`En Proceso`** en el single select de Airtable (el código también normaliza la etiqueta vieja **«En gestión»** si quedó de instalaciones anteriores).
+- Campo datetime **`revisar_despues_de`** para posponer revisión. Si en tu base solo existe **`revisar_despues`**, la app lo **lee** al cargar; al guardar o posponer escribe en **`revisar_despues_de`** (creá/renombrá el campo en Airtable para una sola columna definitiva).
+
+### Campos extra en Leads (Kanban, conversión y enlaces)
 
 Desde la raíz del monorepo `extensions`, con `.env` que tenga `AIRTABLE_TOKEN` y `AIRTABLE_BASE_ID`:
 
 ```bash
 node scripts/airtable-schema/08-campos-leads-motores.js
 ```
+
+*(El nombre del archivo recuerda el flujo de referencia del equipo; el script solo toca la base cuyo `AIRTABLE_BASE_ID` tengas en `.env`.)*
 
 Crea en **Leads**: `nota_inicial`, `ultima_interaccion`, `ultimo_contacto`, `fecha_modificacion_app`, `fecha_ganado`, `estado_conversion`, fechas de conversión, `cliente_creado`, links opcionales a **Especialistas** / **Clientes** / **Ordenes_Trabajo** (si esas tablas existen en la base). El CRM Modular actualiza interacción y conversión al mover tarjetas en el Kanban y al posponer.
 

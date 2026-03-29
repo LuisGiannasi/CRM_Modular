@@ -101,7 +101,7 @@ export function leadEtapaAssignPatch(etapaNueva) {
   if (!etapaNueva || !ids) return {};
   const p = { modificado_por_app: ids, vendedor: ids };
   if (etapaNueva === 'Contactado') p.contactado_por = ids;
-  if (etapaNueva === 'En gestión') p.en_proceso_por = ids;
+  if (etapaNueva === 'En Proceso') p.en_proceso_por = ids;
   if (etapaNueva === 'Ganado') p.ganado_por = ids;
   if (etapaNueva === 'Perdido') p.perdido_por = ids;
   return p;

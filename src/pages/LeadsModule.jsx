@@ -20,7 +20,14 @@ import {
   DOCUMENTO_TIPO,
   NOTA_TIPOS,
   etapaBadgeStyle,
+  normalizeLeadEtapa,
 } from '../constants/leadsOptions';
+
+/** Fecha «revisar»: campo principal `revisar_despues_de`; lectura compat. con `revisar_despues` si existía en la base. */
+function leadRevisarDespues(fields) {
+  const f = fields || {};
+  return f.revisar_despues_de ?? f.revisar_despues;
+}
 
 const LEAD_FIELD_KEYS = [
   'nombre',
@@ -35,7 +42,7 @@ const LEAD_FIELD_KEYS = [
   'motivo_perdida',
   'fecha_primer_contacto',
   'fecha_conversion',
-  'revisar_despues',
+  'revisar_despues_de',
   'marca_motor',
   'modelo_motor',
   'observaciones',
@@ -82,7 +89,7 @@ function buildLeadPayload(draft) {
     }
     const v = draft[key];
     if (v === '' || v === undefined || v === null) continue;
-    if (key === 'revisar_despues' && typeof v === 'string' && v.includes('T')) {
+    if (key === 'revisar_despues_de' && typeof v === 'string' && v.includes('T')) {
       const t = new Date(v);
       if (!Number.isNaN(t.getTime())) fields[key] = t.toISOString();
       continue;
@@ -106,7 +113,7 @@ function emptyDraft() {
     motivo_perdida: '',
     fecha_primer_contacto: '',
     fecha_conversion: '',
-    revisar_despues: '',
+    revisar_despues_de: '',
     marca_motor: '',
     modelo_motor: '',
     observaciones: '',
@@ -124,13 +131,13 @@ function recordToDraft(record) {
     email: f.email ?? '',
     tipo_consulta: f.tipo_consulta ?? '',
     empresa_destino: f.empresa_destino ?? '',
-    etapa: f.etapa ?? 'Nuevo',
+    etapa: normalizeLeadEtapa(f.etapa),
     origen: f.origen ?? '',
     documento_tipo: f.documento_tipo ?? '',
     motivo_perdida: f.motivo_perdida ?? '',
     fecha_primer_contacto: f.fecha_primer_contacto ?? '',
     fecha_conversion: f.fecha_conversion ?? '',
-    revisar_despues: toDatetimeLocalValue(f.revisar_despues),
+    revisar_despues_de: toDatetimeLocalValue(leadRevisarDespues(f)),
     marca_motor: f.marca_motor ?? '',
     modelo_motor: f.modelo_motor ?? '',
     observaciones: f.observaciones ?? '',
@@ -232,7 +239,7 @@ export default function LeadsModule() {
     const q = search.trim().toLowerCase();
     return records.filter((r) => {
       const f = r.fields || {};
-      if (filtroEtapa && f.etapa !== filtroEtapa) return false;
+      if (filtroEtapa && normalizeLeadEtapa(f.etapa) !== filtroEtapa) return false;
       if (!q) return true;
       const blob = [
         f.nombre,
@@ -256,7 +263,7 @@ export default function LeadsModule() {
     const q = search.trim().toLowerCase();
     for (const r of records) {
       const f = r.fields || {};
-      if (filtroEtapa && f.etapa !== filtroEtapa) continue;
+      if (filtroEtapa && normalizeLeadEtapa(f.etapa) !== filtroEtapa) continue;
       if (q) {
         const blob = [
           f.nombre,
@@ -273,7 +280,7 @@ export default function LeadsModule() {
           .toLowerCase();
         if (!blob.includes(q)) continue;
       }
-      const et = f.etapa && ETAPAS.includes(f.etapa) ? f.etapa : 'Nuevo';
+      const et = normalizeLeadEtapa(f.etapa);
       if (!map[et]) map[et] = [];
       map[et].push(r);
     }
@@ -349,7 +356,10 @@ export default function LeadsModule() {
     setSavingNota(true);
     setNotasError(null);
     try {
-      const hadRevisar = !!(selected.fields && selected.fields.revisar_despues);
+      const hadRevisar = !!(
+        selected.fields &&
+        (selected.fields.revisar_despues_de || selected.fields.revisar_despues)
+      );
       const titulo = nuevaNota.contenido.trim().slice(0, 80);
       const fecha = new Date().toISOString();
       await createRecord(AIRTABLE_TABLE_NOTAS_LEADS, {
@@ -361,7 +371,7 @@ export default function LeadsModule() {
         [AIRTABLE_NOTAS_LINK_FIELD]: [selected.id],
       });
       const touchPatch = { ...leadInteractionTouchPatch() };
-      if (hadRevisar) touchPatch.revisar_despues = null;
+      if (hadRevisar) touchPatch.revisar_despues_de = null;
       await updateRecord(AIRTABLE_LEADS_TABLE_API, selected.id, touchPatch);
       setNuevaNota({ contenido: '', tipo: 'Observación', autor_nombre: nuevaNota.autor_nombre });
       const rows = await fetchNotasByLead(selected.id);
@@ -385,7 +395,7 @@ export default function LeadsModule() {
 
   function handleKanbanDragStart(e, r) {
     const f = r.fields || {};
-    const et = f.etapa && ETAPAS.includes(f.etapa) ? f.etapa : 'Nuevo';
+    const et = normalizeLeadEtapa(f.etapa);
     setDraggingLeadId(r.id);
     const payload = JSON.stringify({ leadId: r.id, etapa: et });
     e.dataTransfer.setData('application/json', payload);
@@ -432,7 +442,7 @@ export default function LeadsModule() {
     const r = records.find((x) => x.id === leadId);
     if (!r) return;
     const f = r.fields || {};
-    const etapaPrev = f.etapa && ETAPAS.includes(f.etapa) ? f.etapa : 'Nuevo';
+    const etapaPrev = normalizeLeadEtapa(f.etapa);
     if (etapaPrev === etapaColumna) return;
     setEtapaModal({
       leadId: r.id,
@@ -474,7 +484,7 @@ export default function LeadsModule() {
         ...leadEtapaAssignPatch(etapaNueva),
       };
       if (etapaNueva === 'Perdido') patch.motivo_perdida = motivoPerdidaKanban.trim();
-      if (etapaNueva === 'Ganado' || etapaNueva === 'Perdido') patch.revisar_despues = null;
+      if (etapaNueva === 'Ganado' || etapaNueva === 'Perdido') patch.revisar_despues_de = null;
       if (etapaNueva === 'Ganado') {
         const hoy = new Date().toISOString();
         patch.fecha_ganado = hoy;
@@ -511,14 +521,14 @@ export default function LeadsModule() {
         autor_nombre: nuevaNota.autor_nombre?.trim() || '—',
       });
       await updateRecord(AIRTABLE_LEADS_TABLE_API, leadId, {
-        revisar_despues: until.toISOString(),
+        revisar_despues_de: until.toISOString(),
         ...leadInteractionTouchPatch(),
       });
       setPosponerModal(null);
       setPosponerMotivo('');
       await loadLeads();
       if (selectedId === leadId) {
-        setDraft((d) => ({ ...d, revisar_despues: toDatetimeLocalValue(until.toISOString()) }));
+        setDraft((d) => ({ ...d, revisar_despues_de: toDatetimeLocalValue(until.toISOString()) }));
       }
     } catch (err) {
       setError(err.message || String(err));
@@ -641,7 +651,8 @@ export default function LeadsModule() {
                     <div className="kanban-cards">
                       {col.map((r) => {
                         const f = r.fields || {};
-                        const rev = f.revisar_despues ? new Date(f.revisar_despues).getTime() : 0;
+                        const revIso = leadRevisarDespues(f);
+                        const rev = revIso ? new Date(revIso).getTime() : 0;
                         const pospuesto = rev > Date.now();
                         return (
                           <div key={r.id} style={{ position: 'relative' }}>
@@ -669,13 +680,14 @@ export default function LeadsModule() {
                               {f.origen && <p className="kanban-card-meta">Origen: {f.origen}</p>}
                               {pospuesto && (
                                 <p className="kanban-card-meta" style={{ color: '#fbbf24' }}>
-                                  Revisar {formatDisplayDate(f.revisar_despues)}
+                                  Revisar {formatDisplayDate(revIso)}
                                 </p>
                               )}
                               <p className="kanban-card-meta">Creado {formatDisplayDate(r.createdTime)}</p>
                             </div>
                             <div className="kanban-card-actions">
-                              {(f.etapa === 'Contactado' || f.etapa === 'En gestión') && (
+                              {(normalizeLeadEtapa(f.etapa) === 'Contactado' ||
+                                normalizeLeadEtapa(f.etapa) === 'En Proceso') && (
                                 <button
                                   type="button"
                                   className="secondary"
@@ -714,7 +726,8 @@ export default function LeadsModule() {
               <tbody>
                 {filtered.map((r) => {
                   const f = r.fields || {};
-                  const st = etapaBadgeStyle(f.etapa);
+                  const et = normalizeLeadEtapa(f.etapa);
+                  const st = etapaBadgeStyle(et);
                   return (
                     <tr
                       key={r.id}
@@ -725,9 +738,9 @@ export default function LeadsModule() {
                         <strong>{[f.nombre, f.apellido].filter(Boolean).join(' ') || '—'}</strong>
                       </td>
                       <td>
-                        {f.etapa ? (
+                        {et ? (
                           <span className="badge" style={{ background: st.bg, color: st.color }}>
-                            {f.etapa}
+                            {et}
                           </span>
                         ) : (
                           '—'
@@ -812,8 +825,8 @@ export default function LeadsModule() {
                   Revisar después
                   <input
                     type="datetime-local"
-                    value={draft.revisar_despues || ''}
-                    onChange={(e) => setDraft((d) => ({ ...d, revisar_despues: e.target.value }))}
+                    value={draft.revisar_despues_de || ''}
+                    onChange={(e) => setDraft((d) => ({ ...d, revisar_despues_de: e.target.value }))}
                   />
                 </label>
                 <label>

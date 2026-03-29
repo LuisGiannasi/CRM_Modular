@@ -1,4 +1,13 @@
-export const ETAPAS = ['Nuevo', 'Contactado', 'En gestión', 'Ganado', 'Perdido'];
+/** Etapas del embudo en la base del Modular (single select en Airtable debe coincidir). */
+export const ETAPAS = ['Nuevo', 'Contactado', 'En Proceso', 'Ganado', 'Perdido'];
+
+/** Normaliza valores viejos («En gestión») hacia En Proceso si quedaron en la base. */
+export function normalizeLeadEtapa(etapa) {
+  if (!etapa) return 'Nuevo';
+  if (etapa === 'En gestión') return 'En Proceso';
+  if (ETAPAS.includes(etapa)) return etapa;
+  return 'Nuevo';
+}
 
 export const TIPOS_CONSULTA = [
   'Rectificación',
@@ -35,7 +44,7 @@ export const NOTA_TIPOS = [
 const ETAPA_STYLE = {
   Nuevo: { bg: '#374151', color: '#e5e7eb' },
   Contactado: { bg: '#1e3a5f', color: '#93c5fd' },
-  'En gestión': { bg: '#422006', color: '#fcd34d' },
+  'En Proceso': { bg: '#422006', color: '#fcd34d' },
   Ganado: { bg: '#14532d', color: '#86efac' },
   Perdido: { bg: '#450a0a', color: '#fca5a5' },
 };
