@@ -11,7 +11,26 @@ import {
   AIRTABLE_LEADS_TABLE_API,
   AIRTABLE_TABLE_NOTAS_LEADS,
   AIRTABLE_NOTAS_LINK_FIELD,
+  ESPECIALISTA_RECORD_ID,
+  LEAD_FIELD_PRESUPUESTO_VENTA,
+  checkClienteDuplicado,
+  createClienteFromLead,
+  createOrdenTrabajoStub,
+  createPresupuestoVentaStub,
+  patchLeadConversionComplete,
+  patchLeadGanadoIncompleto,
 } from '../services/airtable';
+import {
+  recordMatchesInboxView,
+  buildEndOfToday,
+  revisarDespuesValue,
+} from '../utils/leadsInbox';
+import {
+  followUpKindFromLeadFields,
+  leadConversionIncomplete,
+  conversionIncompleteLabel,
+  ganadoKanbanBadge,
+} from '../utils/leadConversion';
 import {
   ETAPAS,
   TIPOS_CONSULTA,
@@ -22,12 +41,6 @@ import {
   etapaBadgeStyle,
   normalizeLeadEtapa,
 } from '../constants/leadsOptions';
-
-/** Fecha «revisar»: campo principal `revisar_despues_de`; lectura compat. con `revisar_despues` si existía en la base. */
-function leadRevisarDespues(fields) {
-  const f = fields || {};
-  return f.revisar_despues_de ?? f.revisar_despues;
-}
 
 const LEAD_FIELD_KEYS = [
   'nombre',
@@ -58,6 +71,22 @@ const MOTIVOS_PERDIDA_RAPIDOS = [
   'No encaja con la necesidad',
   'Otro',
 ];
+
+const INBOX_TABS = [
+  { id: 'mi-inbox', label: 'Mi Inbox (HOY)' },
+  { id: 'mis-leads', label: 'Mis leads' },
+  { id: 'historicos', label: 'Históricos' },
+  { id: 'pospuestos', label: 'Pospuestos' },
+  { id: 'sin-tratar-24', label: 'Sin tratar 24h+' },
+];
+
+/** Horas desde `ultimo_contacto` o creación del registro. */
+function horasDesdeUltimaAccion(record) {
+  const f = record.fields || {};
+  const last = f.ultimo_contacto || record.createdTime;
+  if (!last) return null;
+  return (Date.now() - new Date(last).getTime()) / (3600 * 1000);
+}
 
 function formatDisplayDate(iso) {
   if (!iso) return '—';
@@ -137,7 +166,7 @@ function recordToDraft(record) {
     motivo_perdida: f.motivo_perdida ?? '',
     fecha_primer_contacto: f.fecha_primer_contacto ?? '',
     fecha_conversion: f.fecha_conversion ?? '',
-    revisar_despues_de: toDatetimeLocalValue(leadRevisarDespues(f)),
+    revisar_despues_de: toDatetimeLocalValue(revisarDespuesValue(f)),
     marca_motor: f.marca_motor ?? '',
     modelo_motor: f.modelo_motor ?? '',
     observaciones: f.observaciones ?? '',
@@ -161,6 +190,19 @@ export default function LeadsModule() {
   const [notasError, setNotasError] = useState(null);
   const [nuevaNota, setNuevaNota] = useState({ contenido: '', tipo: 'Observación', autor_nombre: '' });
   const [savingNota, setSavingNota] = useState(false);
+  const INBOX_STORAGE = 'crm-modular-leads-inbox';
+  const [inboxView, setInboxView] = useState(() => {
+    try {
+      const v = localStorage.getItem(INBOX_STORAGE);
+      if (['mi-inbox', 'mis-leads', 'historicos', 'pospuestos', 'sin-tratar-24'].includes(v)) {
+        return v;
+      }
+    } catch {
+      /* */
+    }
+    return 'mi-inbox';
+  });
+  const [posponerHoras, setPosponerHoras] = useState(24);
   /** @type {'table' | 'kanban'} */
   const VIEW_STORAGE = 'crm-modular-leads-ui-v2';
   const [listViewMode, setListViewMode] = useState(() => {
@@ -178,6 +220,15 @@ export default function LeadsModule() {
   const [notaEtapaTexto, setNotaEtapaTexto] = useState('');
   const [motivoPerdidaKanban, setMotivoPerdidaKanban] = useState('');
   const [savingEtapa, setSavingEtapa] = useState(false);
+  /** @type {{ leadId: string; nombre: string; notaTexto: string } | null} */
+  const [ganadoFlow, setGanadoFlow] = useState(null);
+  const [ganadoCuit, setGanadoCuit] = useState('');
+  const [ganadoDup, setGanadoDup] = useState(null);
+  /** @type {'ot' | 'presupuesto'} */
+  const [ganadoKindChoice, setGanadoKindChoice] = useState('ot');
+  const [ganadoBusy, setGanadoBusy] = useState(false);
+  const [ganadoErr, setGanadoErr] = useState(null);
+  const [ganadoSearched, setGanadoSearched] = useState(false);
   /** @type {{ leadId: string; nombre: string } | null} */
   const [posponerModal, setPosponerModal] = useState(null);
   const [posponerMotivo, setPosponerMotivo] = useState('');
@@ -235,9 +286,25 @@ export default function LeadsModule() {
     };
   }, [selected]);
 
+  const endToday = useMemo(() => buildEndOfToday(), [records]);
+
+  const inboxFiltered = useMemo(
+    () =>
+      records.filter((r) =>
+        recordMatchesInboxView(
+          r,
+          inboxView,
+          ESPECIALISTA_RECORD_ID,
+          endToday,
+          LEAD_FIELD_PRESUPUESTO_VENTA
+        )
+      ),
+    [records, inboxView, endToday]
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return records.filter((r) => {
+    return inboxFiltered.filter((r) => {
       const f = r.fields || {};
       if (filtroEtapa && normalizeLeadEtapa(f.etapa) !== filtroEtapa) return false;
       if (!q) return true;
@@ -256,30 +323,12 @@ export default function LeadsModule() {
         .toLowerCase();
       return blob.includes(q);
     });
-  }, [records, search, filtroEtapa]);
+  }, [inboxFiltered, search, filtroEtapa]);
 
   const leadsByEtapa = useMemo(() => {
     const map = Object.fromEntries(ETAPAS.map((e) => [e, []]));
-    const q = search.trim().toLowerCase();
-    for (const r of records) {
+    for (const r of filtered) {
       const f = r.fields || {};
-      if (filtroEtapa && normalizeLeadEtapa(f.etapa) !== filtroEtapa) continue;
-      if (q) {
-        const blob = [
-          f.nombre,
-          f.apellido,
-          f.telefono,
-          f.email,
-          f.marca_motor,
-          f.modelo_motor,
-          f.observaciones,
-          f.nota_inicial,
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
-        if (!blob.includes(q)) continue;
-      }
       const et = normalizeLeadEtapa(f.etapa);
       if (!map[et]) map[et] = [];
       map[et].push(r);
@@ -292,7 +341,7 @@ export default function LeadsModule() {
       });
     }
     return map;
-  }, [records, search, filtroEtapa]);
+  }, [filtered]);
 
   const onSelectRow = (id) => {
     setSelectedId(id === selectedId ? null : id);
@@ -454,9 +503,127 @@ export default function LeadsModule() {
     setMotivoPerdidaKanban('');
   }
 
+  const ganadoRecord = useMemo(
+    () => (ganadoFlow ? records.find((r) => r.id === ganadoFlow.leadId) : null),
+    [ganadoFlow, records]
+  );
+
+  const ganadoKindResolved = useMemo(() => {
+    if (!ganadoRecord) return 'ot';
+    const k = followUpKindFromLeadFields(ganadoRecord.fields || {});
+    if (k === 'choose') return ganadoKindChoice;
+    return k;
+  }, [ganadoRecord, ganadoKindChoice]);
+
+  async function buscarDupGanado() {
+    if (!ganadoRecord) return;
+    setGanadoErr(null);
+    setGanadoSearched(true);
+    const f = ganadoRecord.fields || {};
+    try {
+      const dup = await checkClienteDuplicado({
+        telefono: f.telefono,
+        cuit: ganadoCuit,
+      });
+      setGanadoDup(dup);
+    } catch (e) {
+      setGanadoErr(e.message || String(e));
+    }
+  }
+
+  async function ejecutarConversionGanado() {
+    if (!ganadoFlow || !ganadoRecord) return;
+    const { leadId, notaTexto } = ganadoFlow;
+    const f = ganadoRecord.fields || {};
+    const tel = String(f.telefono || '').trim();
+    const cuitTrim = ganadoCuit.trim();
+    if (!tel && !cuitTrim) {
+      setGanadoErr('Completá el teléfono en el lead o ingresá CUIT/DNI para identificar el cliente.');
+      return;
+    }
+    setGanadoBusy(true);
+    setGanadoErr(null);
+    let clienteId = ganadoDup?.id || null;
+    const kind = ganadoKindResolved;
+    try {
+      if (!clienteId) {
+        clienteId = await createClienteFromLead({
+          nombre: f.nombre,
+          apellido: f.apellido,
+          telefono: tel,
+          cuit: cuitTrim || undefined,
+        });
+        if (!clienteId) throw new Error('No se obtuvo el ID del cliente creado.');
+      }
+      let followId =
+        kind === 'ot'
+          ? await createOrdenTrabajoStub(clienteId)
+          : await createPresupuestoVentaStub(clienteId);
+      if (!followId) throw new Error('No se pudo crear la OT ni el presupuesto (revisá tablas y campos en Airtable).');
+      const tipoSeg = kind === 'ot' ? 'OT' : 'Presupuesto de venta';
+      await appendNotaLead(leadId, {
+        contenido: `Cambio a Ganado: ${notaTexto}. ${tipoSeg} generado (${followId}). Cliente vinculado.`,
+        tipo: 'Observación',
+        autor_nombre: nuevaNota.autor_nombre?.trim() || '—',
+      });
+      await patchLeadConversionComplete(leadId, {
+        clienteId,
+        followRecordId: followId,
+        kind,
+      });
+      setGanadoFlow(null);
+      setGanadoDup(null);
+      setGanadoCuit('');
+      setGanadoSearched(false);
+      await loadLeads();
+      if (selectedId === leadId) {
+        setDraft((d) => ({ ...d, etapa: 'Ganado', proceso_incompleto: false }));
+      }
+    } catch (e) {
+      const msg = e.message || String(e);
+      setGanadoErr(msg);
+      try {
+        await patchLeadGanadoIncompleto(leadId, clienteId ? { clienteId } : {});
+        await appendNotaLead(leadId, {
+          contenido: `Intento de conversión a Ganado (incompleto): ${msg}`,
+          tipo: 'Observación',
+          autor_nombre: nuevaNota.autor_nombre?.trim() || '—',
+        });
+      } catch {
+        /* */
+      }
+      await loadLeads();
+    } finally {
+      setGanadoBusy(false);
+    }
+  }
+
   async function confirmCambioEtapaKanban() {
     if (!etapaModal) return;
     const { leadId, etapaNueva } = etapaModal;
+    if (etapaNueva === 'Ganado') {
+      if (!notaEtapaTexto.trim()) {
+        setError('La nota es obligatoria para registrar el cambio de etapa.');
+        return;
+      }
+      setError(null);
+      const rec = records.find((x) => x.id === leadId);
+      const k = followUpKindFromLeadFields(rec?.fields || {});
+      setGanadoKindChoice(k === 'presupuesto' ? 'presupuesto' : 'ot');
+      setGanadoFlow({
+        leadId,
+        nombre: etapaModal.nombre,
+        notaTexto: notaEtapaTexto.trim(),
+      });
+      setGanadoDup(null);
+      setGanadoCuit('');
+      setGanadoErr(null);
+      setGanadoSearched(false);
+      setEtapaModal(null);
+      setNotaEtapaTexto('');
+      setMotivoPerdidaKanban('');
+      return;
+    }
     if (etapaNueva === 'Perdido') {
       if (!motivoPerdidaKanban.trim()) {
         setError('Elegí o escribí un motivo de pérdida.');
@@ -484,14 +651,7 @@ export default function LeadsModule() {
         ...leadEtapaAssignPatch(etapaNueva),
       };
       if (etapaNueva === 'Perdido') patch.motivo_perdida = motivoPerdidaKanban.trim();
-      if (etapaNueva === 'Ganado' || etapaNueva === 'Perdido') patch.revisar_despues_de = null;
-      if (etapaNueva === 'Ganado') {
-        const hoy = new Date().toISOString();
-        patch.fecha_ganado = hoy;
-        patch.estado_conversion = 'pendiente';
-        patch.fecha_inicio_conversion = hoy;
-        patch.fecha_fin_conversion = null;
-      }
+      if (etapaNueva === 'Perdido') patch.revisar_despues_de = null;
       await updateRecord(AIRTABLE_LEADS_TABLE_API, leadId, patch);
       setEtapaModal(null);
       setNotaEtapaTexto('');
@@ -507,16 +667,17 @@ export default function LeadsModule() {
     }
   }
 
-  async function confirmPosponer24h() {
+  async function confirmPosponer() {
     if (!posponerModal || !posponerMotivo.trim()) return;
+    const horas = posponerHoras === 48 ? 48 : 24;
     setSavingPosponer(true);
     setError(null);
     try {
       const { leadId } = posponerModal;
       const until = new Date();
-      until.setHours(until.getHours() + 24);
+      until.setHours(until.getHours() + horas);
       await appendNotaLead(leadId, {
-        contenido: `Pospuesto 24h: ${posponerMotivo.trim()}`,
+        contenido: `Pospuesto ${horas}h: ${posponerMotivo.trim()}`,
         tipo: 'Observación',
         autor_nombre: nuevaNota.autor_nombre?.trim() || '—',
       });
@@ -526,6 +687,7 @@ export default function LeadsModule() {
       });
       setPosponerModal(null);
       setPosponerMotivo('');
+      setPosponerHoras(24);
       await loadLeads();
       if (selectedId === leadId) {
         setDraft((d) => ({ ...d, revisar_despues_de: toDatetimeLocalValue(until.toISOString()) }));
@@ -559,7 +721,8 @@ export default function LeadsModule() {
       <header className="app-header">
         <h1>CRM Modular — Módulo 1 · Leads</h1>
         <p>
-          Vista principal: tablero por etapa (arrastrá tarjetas). Lista para búsqueda masiva. Panel derecho: edición y notas.
+          Bandejas (Mi Inbox, Mis leads, Históricos, Pospuestos, Sin tratar 24h+) y tablero por etapa. Proceso:{' '}
+          <code>docs/leads-proceso.md</code>. Panel derecho: edición y notas.
         </p>
       </header>
 
@@ -568,6 +731,30 @@ export default function LeadsModule() {
           {error && !loading && <div className="error-banner">{error}</div>}
 
           <div className="toolbar">
+            <div className="toolbar-segment" role="group" aria-label="Bandeja">
+              {INBOX_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className={inboxView === tab.id ? 'active' : ''}
+                  onClick={() => {
+                    setInboxView(tab.id);
+                    try {
+                      localStorage.setItem(INBOX_STORAGE, tab.id);
+                    } catch {
+                      /* */
+                    }
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            {!ESPECIALISTA_RECORD_ID && (
+              <p className="toolbar-hint" style={{ margin: 0, fontSize: '0.85rem', opacity: 0.85 }}>
+                Opcional: <code>VITE_ESPECIALISTA_RECORD_ID</code> para filtrar «mis» leads por vendedor.
+              </p>
+            )}
             <div className="toolbar-segment" role="group" aria-label="Vista">
               <button
                 type="button"
@@ -600,7 +787,7 @@ export default function LeadsModule() {
             </div>
             <input
               type="search"
-              placeholder="Buscar por nombre, teléfono, email…"
+              placeholder="Buscar por nombre, teléfono, nota…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               aria-label="Buscar leads"
@@ -629,7 +816,15 @@ export default function LeadsModule() {
             <div className="loading">Cargando leads…</div>
           ) : listViewMode === 'kanban' ? (
             records.length === 0 ? (
-              <div className="empty-state">No hay leads cargados. Usá «Nuevo lead» o «Actualizar» tras crear datos en Airtable.</div>
+              <div className="empty-state">
+                No hay leads cargados. Usá «Nuevo lead» o «Actualizar» tras crear datos en Airtable.
+              </div>
+            ) : inboxFiltered.length === 0 ? (
+              <div className="empty-state">
+                No hay leads en esta bandeja. Probá otra pestaña (arriba) o limpiá la búsqueda y el filtro de etapa.
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="empty-state">Ningún lead coincide con la búsqueda o el filtro de etapa.</div>
             ) : (
             <div className="kanban-board">
               {ETAPAS.map((etapa) => {
@@ -651,9 +846,17 @@ export default function LeadsModule() {
                     <div className="kanban-cards">
                       {col.map((r) => {
                         const f = r.fields || {};
-                        const revIso = leadRevisarDespues(f);
+                        const revIso = revisarDespuesValue(f);
                         const rev = revIso ? new Date(revIso).getTime() : 0;
                         const pospuesto = rev > Date.now();
+                        const etCard = normalizeLeadEtapa(f.etapa);
+                        const hAcc = horasDesdeUltimaAccion(r);
+                        const alertaHoras =
+                          (etCard === 'Contactado' || etCard === 'En gestión') &&
+                          !pospuesto &&
+                          hAcc != null &&
+                          hAcc >= 24;
+                        const badgeGanado = ganadoKanbanBadge(f, LEAD_FIELD_PRESUPUESTO_VENTA);
                         return (
                           <div key={r.id} style={{ position: 'relative' }}>
                             {/* div draggable: los <button draggable> suelen no arrastrar bien (como en el CRM viejo). */}
@@ -661,7 +864,7 @@ export default function LeadsModule() {
                               role="button"
                               tabIndex={0}
                               draggable
-                              className={`kanban-card ${r.id === selectedId ? 'selected' : ''} ${draggingLeadId === r.id ? 'dragging' : ''}`}
+                              className={`kanban-card ${r.id === selectedId ? 'selected' : ''} ${draggingLeadId === r.id ? 'dragging' : ''} ${badgeGanado ? 'kanban-card-ganado-alert' : ''}`}
                               onDragStart={(e) => handleKanbanDragStart(e, r)}
                               onDragEnd={handleKanbanDragEnd}
                               onClick={() => onSelectRow(r.id)}
@@ -672,12 +875,24 @@ export default function LeadsModule() {
                                 }
                               }}
                             >
-                              <h4>{leadDisplayName(r)}</h4>
+                              <div className="kanban-card-title-row">
+                                <h4>{leadDisplayName(r)}</h4>
+                                {badgeGanado && (
+                                  <span className="kanban-card-badge-incomplete" title="Conversión Ganado incompleta o a revisar">
+                                    {badgeGanado}
+                                  </span>
+                                )}
+                              </div>
                               {f.nota_inicial && (
                                 <p className="kanban-card-meta kanban-card-snippet">{f.nota_inicial}</p>
                               )}
                               {f.telefono && <p className="kanban-card-meta">Tel. {f.telefono}</p>}
                               {f.origen && <p className="kanban-card-meta">Origen: {f.origen}</p>}
+                              {alertaHoras && (
+                                <p className="kanban-card-meta" style={{ color: '#f87171' }}>
+                                  +{Math.floor(hAcc)}h/sin acciones
+                                </p>
+                              )}
                               {pospuesto && (
                                 <p className="kanban-card-meta" style={{ color: '#fbbf24' }}>
                                   Revisar {formatDisplayDate(revIso)}
@@ -686,18 +901,18 @@ export default function LeadsModule() {
                               <p className="kanban-card-meta">Creado {formatDisplayDate(r.createdTime)}</p>
                             </div>
                             <div className="kanban-card-actions">
-                              {(normalizeLeadEtapa(f.etapa) === 'Contactado' ||
-                                normalizeLeadEtapa(f.etapa) === 'En Proceso') && (
+                              {(etCard === 'Contactado' || etCard === 'En gestión') && (
                                 <button
                                   type="button"
                                   className="secondary"
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    setPosponerHoras(24);
                                     setPosponerModal({ leadId: r.id, nombre: leadDisplayName(r) });
                                     setPosponerMotivo('');
                                   }}
                                 >
-                                  Posponer 24h
+                                  Posponer
                                 </button>
                               )}
                             </div>
@@ -710,8 +925,16 @@ export default function LeadsModule() {
               })}
             </div>
             )
+          ) : records.length === 0 ? (
+            <div className="empty-state">
+              No hay leads cargados. Usá «Nuevo lead» o «Actualizar» tras crear datos en Airtable.
+            </div>
+          ) : inboxFiltered.length === 0 ? (
+            <div className="empty-state">
+              No hay leads en esta bandeja. Probá otra pestaña o limpiá la búsqueda y el filtro de etapa.
+            </div>
           ) : filtered.length === 0 ? (
-            <div className="empty-state">No hay leads que coincidan con los filtros.</div>
+            <div className="empty-state">Ningún lead coincide con la búsqueda o el filtro de etapa.</div>
           ) : (
             <table className="leads-table">
               <thead>
@@ -763,6 +986,22 @@ export default function LeadsModule() {
           ) : (
             <>
               <h2>Editar lead</h2>
+              {normalizeLeadEtapa(selected.fields?.etapa) === 'Ganado' &&
+                (selected.fields?.proceso_incompleto === true ||
+                  leadConversionIncomplete(selected.fields || {}, LEAD_FIELD_PRESUPUESTO_VENTA)) && (
+                  <div
+                    className="error-banner"
+                    role="alert"
+                    style={{
+                      marginBottom: '1rem',
+                      fontWeight: 800,
+                      fontSize: '0.75rem',
+                      letterSpacing: '0.02em',
+                    }}
+                  >
+                    {conversionIncompleteLabel(followUpKindFromLeadFields(selected.fields || {}))}
+                  </div>
+                )}
               <div className="form-grid">
                 <label>
                   Nombre *
@@ -986,17 +1225,30 @@ export default function LeadsModule() {
                 </label>
               </>
             ) : (
-              <label>
-                Nota del cambio (obligatorio)
-                <textarea
-                  value={notaEtapaTexto}
-                  onChange={(e) => setNotaEtapaTexto(e.target.value)}
-                  rows={4}
-                  placeholder="Ej. llamé, acordamos enviar presupuesto…"
-                  autoFocus
-                  style={{ width: '100%', marginTop: '0.35rem' }}
-                />
-              </label>
+              <>
+                {etapaModal.etapaNueva === 'Ganado' && (
+                  <p className="hint" style={{ marginBottom: '0.75rem' }}>
+                    Después de esta nota se abrirá el asistente: <strong>cliente</strong> (sin duplicar por teléfono o
+                    CUIT/DNI) y registro de <strong>OT</strong> (taller) o <strong>presupuesto de venta</strong>{' '}
+                    (mecánica pesada), según tipo de consulta / documento.
+                  </p>
+                )}
+                <label>
+                  Nota del cambio (obligatorio)
+                  <textarea
+                    value={notaEtapaTexto}
+                    onChange={(e) => setNotaEtapaTexto(e.target.value)}
+                    rows={4}
+                    placeholder={
+                      etapaModal.etapaNueva === 'Ganado'
+                        ? 'Ej. cliente aceptó avanzar; en el siguiente paso vincularemos cliente y OT o presupuesto…'
+                        : 'Ej. llamé, acordamos enviar presupuesto…'
+                    }
+                    autoFocus
+                    style={{ width: '100%', marginTop: '0.35rem' }}
+                  />
+                </label>
+              </>
             )}
             <div className="form-actions">
               <button type="button" className="secondary" disabled={savingEtapa} onClick={() => setEtapaModal(null)}>
@@ -1010,9 +1262,120 @@ export default function LeadsModule() {
                 }
                 onClick={confirmCambioEtapaKanban}
               >
-                {savingEtapa ? 'Guardando…' : 'Confirmar'}
+                {savingEtapa ? 'Guardando…' : etapaModal.etapaNueva === 'Ganado' ? 'Continuar' : 'Confirmar'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {ganadoFlow && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !ganadoBusy) {
+              setGanadoFlow(null);
+              setGanadoDup(null);
+              setGanadoCuit('');
+              setGanadoErr(null);
+              setGanadoSearched(false);
+            }
+          }}
+        >
+          <div className="modal" role="dialog" aria-labelledby="ganado-modal-title" onClick={(e) => e.stopPropagation()}>
+            <h2 id="ganado-modal-title">Conversión a Ganado</h2>
+            {!ganadoRecord ? (
+              <p className="hint">
+                No se encontró el lead en la lista actual.{' '}
+                <button type="button" onClick={() => setGanadoFlow(null)}>
+                  Cerrar
+                </button>
+              </p>
+            ) : (
+              <>
+                <p className="hint">
+                  <strong>{ganadoFlow.nombre}</strong> — el lead pasará a <strong>Ganado</strong> al finalizar. La nota
+                  quedará: «{ganadoFlow.notaTexto}»
+                </p>
+                {followUpKindFromLeadFields(ganadoRecord.fields || {}) === 'choose' && (
+                  <div className="toolbar-segment" role="group" aria-label="Tipo de salida" style={{ marginBottom: '0.75rem' }}>
+                    <button
+                      type="button"
+                      className={ganadoKindChoice === 'ot' ? 'active' : ''}
+                      onClick={() => setGanadoKindChoice('ot')}
+                    >
+                      Orden de trabajo (taller / MP)
+                    </button>
+                    <button
+                      type="button"
+                      className={ganadoKindChoice === 'presupuesto' ? 'active' : ''}
+                      onClick={() => setGanadoKindChoice('presupuesto')}
+                    >
+                      Presupuesto venta (mecánica pesada)
+                    </button>
+                  </div>
+                )}
+                {followUpKindFromLeadFields(ganadoRecord.fields || {}) !== 'choose' && (
+                  <p className="hint" style={{ marginBottom: '0.75rem' }}>
+                    Según el lead se generará:{' '}
+                    <strong>{ganadoKindResolved === 'ot' ? 'Orden de trabajo' : 'Presupuesto de venta'}</strong>.
+                  </p>
+                )}
+                <label>
+                  CUIT / DNI (opcional, refuerza anti-duplicado)
+                  <input
+                    value={ganadoCuit}
+                    onChange={(e) => setGanadoCuit(e.target.value)}
+                    placeholder="Sin guiones"
+                    style={{ width: '100%', marginTop: '0.35rem' }}
+                  />
+                </label>
+                <div style={{ marginTop: '0.75rem' }}>
+                  <button type="button" className="secondary" disabled={ganadoBusy} onClick={buscarDupGanado}>
+                    Buscar cliente existente (teléfono del lead + CUIT/DNI)
+                  </button>
+                </div>
+                {ganadoSearched && !ganadoDup && !ganadoErr && (
+                  <p className="hint" style={{ marginTop: '0.5rem' }}>
+                    No hay coincidencia: al confirmar se creará un cliente nuevo en <strong>Clientes</strong>.
+                  </p>
+                )}
+                {ganadoDup && (
+                  <p className="hint" style={{ marginTop: '0.5rem', color: 'var(--accent, #93c5fd)' }}>
+                    Cliente existente por {ganadoDup.matchField}: <strong>{ganadoDup.nombre}</strong> ({ganadoDup.id}).
+                  </p>
+                )}
+                {ganadoErr && (
+                  <div className="error-banner" style={{ marginTop: '0.75rem' }}>
+                    {ganadoErr}
+                  </div>
+                )}
+                <div className="form-actions" style={{ marginTop: '1rem' }}>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={ganadoBusy}
+                    onClick={() => {
+                      setGanadoFlow(null);
+                      setGanadoDup(null);
+                      setGanadoCuit('');
+                      setGanadoErr(null);
+                      setGanadoSearched(false);
+                    }}
+                  >
+                    Cancelar
+                  </button>
+                  <button type="button" disabled={ganadoBusy} onClick={ejecutarConversionGanado}>
+                    {ganadoBusy
+                      ? 'Procesando…'
+                      : ganadoDup
+                        ? `Vincular y generar ${ganadoKindResolved === 'ot' ? 'OT' : 'presupuesto'}`
+                        : `Crear cliente y generar ${ganadoKindResolved === 'ot' ? 'OT' : 'presupuesto'}`}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -1021,20 +1384,41 @@ export default function LeadsModule() {
         <div
           className="modal-backdrop"
           role="presentation"
-          onClick={(e) => e.target === e.currentTarget && !savingPosponer && setPosponerModal(null)}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !savingPosponer) {
+              setPosponerModal(null);
+              setPosponerHoras(24);
+            }
+          }}
         >
           <div className="modal" role="dialog" aria-labelledby="posponer-modal-title" onClick={(e) => e.stopPropagation()}>
-            <h2 id="posponer-modal-title">Posponer 24 h</h2>
+            <h2 id="posponer-modal-title">Posponer revisión</h2>
             <p className="hint">
-              <strong>{posponerModal.nombre}</strong> — se actualizará «Revisar después» y se agregará una nota. Motivo obligatorio.
+              <strong>{posponerModal.nombre}</strong> — se guardará la fecha en «Revisar después» y una nota. Motivo obligatorio.
             </p>
+            <div className="toolbar-segment" role="group" aria-label="Plazo" style={{ marginBottom: '0.75rem' }}>
+              <button
+                type="button"
+                className={posponerHoras === 24 ? 'active' : ''}
+                onClick={() => setPosponerHoras(24)}
+              >
+                24 h
+              </button>
+              <button
+                type="button"
+                className={posponerHoras === 48 ? 'active' : ''}
+                onClick={() => setPosponerHoras(48)}
+              >
+                48 h
+              </button>
+            </div>
             <label>
               Motivo
               <textarea
                 value={posponerMotivo}
                 onChange={(e) => setPosponerMotivo(e.target.value)}
                 rows={3}
-                placeholder="Ej. no atiende, reintentar mañana…"
+                placeholder="Ej. no atiende, espera confirmación de propuesta, taller aún no desarmó…"
                 autoFocus
                 style={{ width: '100%', marginTop: '0.35rem' }}
               />
@@ -1044,12 +1428,15 @@ export default function LeadsModule() {
                 type="button"
                 className="secondary"
                 disabled={savingPosponer}
-                onClick={() => setPosponerModal(null)}
+                onClick={() => {
+                  setPosponerModal(null);
+                  setPosponerHoras(24);
+                }}
               >
                 Cancelar
               </button>
-              <button type="button" disabled={!posponerMotivo.trim() || savingPosponer} onClick={confirmPosponer24h}>
-                {savingPosponer ? 'Guardando…' : 'Posponer'}
+              <button type="button" disabled={!posponerMotivo.trim() || savingPosponer} onClick={confirmPosponer}>
+                {savingPosponer ? 'Guardando…' : `Posponer ${posponerHoras === 48 ? 48 : 24} h`}
               </button>
             </div>
           </div>

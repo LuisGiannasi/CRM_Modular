@@ -393,10 +393,42 @@ table.leads-table tr.selected td {
   box-shadow: 0 0 0 1px var(--accent);
 }
 
-.kanban-card h4 {
-  margin: 0 0 0.25rem;
+.kanban-card-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
+}
+
+.kanban-card-title-row h4 {
+  margin: 0;
   font-size: 0.88rem;
   font-weight: 600;
+  flex: 1;
+  min-width: 0;
+}
+
+.kanban-card-badge-incomplete {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  line-height: 1.2;
+  padding: 0.2rem 0.4rem;
+  border-radius: 5px;
+  background: rgba(248, 113, 113, 0.18);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  max-width: 42%;
+  text-align: right;
+  hyphens: auto;
+}
+
+.kanban-card-ganado-alert {
+  border-color: rgba(248, 113, 113, 0.35);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.12);
 }
 
 .kanban-card-meta {

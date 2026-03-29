@@ -28,12 +28,11 @@ node scripts/airtable-schema/07-link-notas-lead.js
 
 (Ese script crea el campo link `lead` en `Notas_Leads`.)
 
-### Esquema de etapa y posponer (base propia del Modular)
+### Proceso de negocio y esquema (Leads)
 
-El **CRM Modular** usa su **propia base** de Airtable (independiente de la del CRM Motores Pesados). Los nombres de campo y de opciones no tienen que coincidir entre sistemas; en esta app conviene usar:
-
-- Etapa intermedia **`En Proceso`** en el single select de Airtable (el código también normaliza la etiqueta vieja **«En gestión»** si quedó de instalaciones anteriores).
-- Campo datetime **`revisar_despues_de`** para posponer revisión. Si en tu base solo existe **`revisar_despues`**, la app lo **lee** al cargar; al guardar o posponer escribe en **`revisar_despues_de`** (creá/renombrá el campo en Airtable para una sola columna definitiva).
+- Documento operativo: **`docs/leads-proceso.md`** (embudo, vistas Mi Inbox / Mis leads / Históricos / Pospuestos / Sin tratar 24h+).
+- En Airtable, la etapa intermedia debe llamarse **`En gestión`** (contacto efectivo + espera respuesta a propuesta). El código acepta también **`En Proceso`** como alias y lo normaliza a **En gestión**.
+- Campo datetime **`revisar_despues_de`** para posponer 24/48 h. Si solo existe **`revisar_despues`**, la app lo **lee** al cargar; al guardar o posponer escribe **`revisar_despues_de`**.
 
 ### Campos extra en Leads (Kanban, conversión y enlaces)
 
@@ -48,6 +47,8 @@ node scripts/airtable-schema/08-campos-leads-motores.js
 Crea en **Leads**: `nota_inicial`, `ultima_interaccion`, `ultimo_contacto`, `fecha_modificacion_app`, `fecha_ganado`, `estado_conversion`, fechas de conversión, `cliente_creado`, links opcionales a **Especialistas** / **Clientes** / **Ordenes_Trabajo** (si esas tablas existen en la base). El CRM Modular actualiza interacción y conversión al mover tarjetas en el Kanban y al posponer.
 
 Opcional en `.env`: `VITE_ESPECIALISTA_RECORD_ID` (un `rec…` de la tabla Especialistas) para rellenar `vendedor` y campos de auditoría al guardar.
+
+**Ganado:** el Kanban abre un asistente para **cliente** (anti-duplicado por teléfono/CUIT), luego **OT** o **presupuesto de venta** según tipo de consulta; tablas y campo link de presupuesto: variables en `.env.example`. Si algo falla, el lead queda con **proceso incompleto** y cartel en el detalle.
 
 ## Subir a GitHub
 

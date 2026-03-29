@@ -101,7 +101,7 @@ export function leadEtapaAssignPatch(etapaNueva) {
   if (!etapaNueva || !ids) return {};
   const p = { modificado_por_app: ids, vendedor: ids };
   if (etapaNueva === 'Contactado') p.contactado_por = ids;
-  if (etapaNueva === 'En Proceso') p.en_proceso_por = ids;
+  if (etapaNueva === 'En gestión') p.en_proceso_por = ids;
   if (etapaNueva === 'Ganado') p.ganado_por = ids;
   if (etapaNueva === 'Perdido') p.perdido_por = ids;
   return p;
@@ -243,4 +243,254 @@ export async function fetchNotasByLead(leadId) {
     }
   }
   return null;
+}
+
+// ── Conversión Ganado → Cliente + OT / Presupuesto ─────────────────────────
+
+export const AIRTABLE_TABLE_CLIENTES = (() => {
+  const raw = import.meta.env.VITE_AIRTABLE_TABLE_CLIENTES;
+  return raw && String(raw).trim() ? String(raw).trim() : 'Clientes';
+})();
+
+export const AIRTABLE_TABLE_OT = (() => {
+  const raw = import.meta.env.VITE_AIRTABLE_TABLE_OT;
+  return raw && String(raw).trim() ? String(raw).trim() : 'Ordenes_Trabajo';
+})();
+
+export const AIRTABLE_TABLE_PRESUPUESTO_VENTA = (() => {
+  const raw = import.meta.env.VITE_AIRTABLE_TABLE_PRESUPUESTO_VENTA;
+  return raw && String(raw).trim() ? String(raw).trim() : 'Presupuesto_Venta';
+})();
+
+/** Campo en Leads que enlaza a Presupuesto_Venta (si existe en la base). */
+export const LEAD_FIELD_PRESUPUESTO_VENTA = (() => {
+  const raw = import.meta.env.VITE_LEAD_FIELD_PRESUPUESTO_VENTA;
+  return raw && String(raw).trim() ? String(raw).trim() : 'presupuesto_venta';
+})();
+
+function escapeAirtableFormula(str) {
+  return String(str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function normalizePhoneForMatch(raw) {
+  let d = String(raw || '').replace(/\D/g, '');
+  if (!d) return '';
+  while (d.startsWith('00')) d = d.slice(2);
+  if (d.startsWith('54')) d = d.slice(2);
+  if (d.length === 11 && d.startsWith('9')) d = d.slice(1);
+  if (d.length > 10) d = d.slice(-10);
+  return d;
+}
+
+/**
+ * @param {string} table
+ * @param {string} filterByFormula
+ * @param {number} maxRecords
+ */
+export async function fetchRecordsByFormula(table, filterByFormula, maxRecords = 20) {
+  const tbl = resolveTableSegmentForApi(table);
+  const params = new URLSearchParams({
+    filterByFormula,
+    maxRecords: String(maxRecords),
+  });
+  const data = await req(`/${encodeURIComponent(tbl)}?${params}`);
+  return data.records || [];
+}
+
+/**
+ * @returns {Promise<{ id: string; nombre: string; matchField: string } | null>}
+ */
+export async function checkClienteDuplicado({ telefono, cuit }) {
+  const conditions = [];
+  const cuitTrim = (cuit || '').trim();
+  const telTrim = (telefono || '').trim();
+  if (cuitTrim) conditions.push(`{cuit} = '${escapeAirtableFormula(cuitTrim)}'`);
+  if (telTrim) conditions.push(`{telefono} = '${escapeAirtableFormula(telTrim)}'`);
+  if (conditions.length === 0) return null;
+  const formula = conditions.length === 1 ? conditions[0] : `OR(${conditions.join(',')})`;
+  try {
+    const records = await fetchRecordsByFormula(AIRTABLE_TABLE_CLIENTES, formula, 5);
+    if (records.length > 0) {
+      const f = records[0].fields || {};
+      const nombre = [f.nombre_referente, f.apellido_referente, f.nombre, f.apellido]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      const matchField =
+        cuitTrim && String(f.cuit || '').replace(/\s/g, '') === cuitTrim.replace(/\s/g, '')
+          ? 'CUIT/DNI'
+          : 'teléfono';
+      return { id: records[0].id, nombre: nombre || 'Cliente existente', matchField };
+    }
+  } catch {
+    /* fórmula o campo inválido → fallback */
+  }
+  const normDoc = cuitTrim.replace(/[^\dA-Za-z]/g, '').toUpperCase();
+  const normTel = normalizePhoneForMatch(telefono);
+  if (!normDoc && !normTel) return null;
+  try {
+    const all = await fetchAllRecords(AIRTABLE_TABLE_CLIENTES, { maxRecords: 500 });
+    for (const r of all) {
+      const f = r.fields || {};
+      const nd = String(f.cuit || '').replace(/[^\dA-Za-z]/g, '').toUpperCase();
+      const nt = normalizePhoneForMatch(f.telefono);
+      const docMatch = !!normDoc && !!nd && normDoc === nd;
+      const telMatch = !!normTel && !!nt && normTel === nt;
+      if (docMatch || telMatch) {
+        const nombre = [f.nombre_referente, f.apellido_referente, f.nombre, f.apellido]
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+        return {
+          id: r.id,
+          nombre: nombre || 'Cliente existente',
+          matchField: docMatch ? 'CUIT/DNI' : 'teléfono',
+        };
+      }
+    }
+  } catch {
+    /* */
+  }
+  return null;
+}
+
+export async function createClienteFromLead({ nombre, apellido, telefono, cuit }) {
+  const fields = {
+    nombre_referente: String(nombre || '').trim() || '—',
+    apellido_referente: String(apellido || '').trim() || '',
+    telefono: String(telefono || '').trim() || '',
+    fecha_creacion: new Date().toISOString(),
+  };
+  if (cuit && String(cuit).trim()) fields.cuit = String(cuit).trim();
+  const res = await createRecord(AIRTABLE_TABLE_CLIENTES, fields);
+  return res.id || res.records?.[0]?.id || null;
+}
+
+export async function vincularLeadACliente(leadId, clienteRecordId) {
+  const lid = normalizeRecordId(leadId);
+  const cid = normalizeRecordId(clienteRecordId);
+  const esp = especialistaIdsForPatch();
+  const base = {
+    cliente_creado: true,
+    cliente: [cid],
+    fecha_modificacion_app: new Date().toISOString(),
+    ...(esp ? { modificado_por_app: esp } : {}),
+  };
+  const attempts = [
+    base,
+    { ...base, cliente: [cid], cliente_id: [cid] },
+    { cliente_creado: true, cliente: [cid], fecha_modificacion_app: new Date().toISOString() },
+  ];
+  let lastErr;
+  for (const patch of attempts) {
+    try {
+      await updateRecord(AIRTABLE_LEADS_TABLE_API, lid, patch);
+      return;
+    } catch (e) {
+      lastErr = e;
+      const msg = String(e?.message || e);
+      if (/unknown field|invalid|cannot parse|UNKNOWN_FIELD/i.test(msg)) continue;
+      throw e;
+    }
+  }
+  throw lastErr || new Error('No se pudo vincular el cliente al lead');
+}
+
+function extractCreateId(res) {
+  return res?.id || res?.records?.[0]?.id || null;
+}
+
+export async function createOrdenTrabajoStub(clienteRecordId, suffix = '') {
+  const cid = normalizeRecordId(clienteRecordId);
+  const stamp = Date.now();
+  const fields = {
+    numero_ot: `CRM-${stamp}${suffix ? `-${suffix}` : ''}`,
+  };
+  if (cid) {
+    fields.cliente = [cid];
+  }
+  try {
+    const res = await createRecord(AIRTABLE_TABLE_OT, fields);
+    return extractCreateId(res);
+  } catch (e) {
+    const res = await createRecord(AIRTABLE_TABLE_OT, { numero_ot: fields.numero_ot });
+    return extractCreateId(res);
+  }
+}
+
+export async function createPresupuestoVentaStub(clienteRecordId) {
+  const cid = normalizeRecordId(clienteRecordId);
+  const fields = {
+    numero_pv: `PV-${Date.now()}`,
+  };
+  if (cid) fields.cliente = [cid];
+  try {
+    const res = await createRecord(AIRTABLE_TABLE_PRESUPUESTO_VENTA, fields);
+    return extractCreateId(res);
+  } catch {
+    const res = await createRecord(AIRTABLE_TABLE_PRESUPUESTO_VENTA, { numero_pv: fields.numero_pv });
+    return extractCreateId(res);
+  }
+}
+
+/**
+ * Actualiza lead tras conversión completa. Intenta enlazar OT o PV según `kind`.
+ * @param {'ot' | 'presupuesto'} kind
+ */
+export async function patchLeadConversionComplete(leadId, { clienteId, followRecordId, kind }) {
+  const lid = normalizeRecordId(leadId);
+  const hoy = new Date().toISOString();
+  const cid = normalizeRecordId(clienteId);
+  const fid = normalizeRecordId(followRecordId);
+  const patch = {
+    etapa: 'Ganado',
+    cliente: [cid],
+    cliente_creado: true,
+    proceso_incompleto: false,
+    estado_conversion: 'completada',
+    fecha_ganado: hoy,
+    fecha_inicio_conversion: hoy,
+    fecha_fin_conversion: hoy,
+    revisar_despues_de: null,
+    ...leadInteractionTouchPatch(),
+    ...leadEtapaAssignPatch('Ganado'),
+  };
+  if (kind === 'ot' && fid) patch.orden_id_inicial = [fid];
+  if (kind === 'presupuesto' && fid) patch[LEAD_FIELD_PRESUPUESTO_VENTA] = [fid];
+
+  try {
+    await updateRecord(AIRTABLE_LEADS_TABLE_API, lid, patch);
+    return;
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (kind === 'presupuesto' && fid && /unknown field|UNKNOWN_FIELD/i.test(msg)) {
+      const lean = { ...patch };
+      delete lean[LEAD_FIELD_PRESUPUESTO_VENTA];
+      lean.presupuesto_venta = [fid];
+      await updateRecord(AIRTABLE_LEADS_TABLE_API, lid, lean);
+      return;
+    }
+    throw e;
+  }
+}
+
+/** Marca Ganado con circuito incompleto (vuelve a Mi Inbox con cartel). */
+export async function patchLeadGanadoIncompleto(leadId, { clienteId } = {}) {
+  const hoy = new Date().toISOString();
+  const patch = {
+    etapa: 'Ganado',
+    proceso_incompleto: true,
+    estado_conversion: 'pendiente',
+    fecha_ganado: hoy,
+    fecha_inicio_conversion: hoy,
+    fecha_fin_conversion: null,
+    revisar_despues_de: null,
+    ...leadInteractionTouchPatch(),
+    ...leadEtapaAssignPatch('Ganado'),
+  };
+  if (clienteId) {
+    patch.cliente = [normalizeRecordId(clienteId)];
+    patch.cliente_creado = true;
+  }
+  await updateRecord(AIRTABLE_LEADS_TABLE_API, normalizeRecordId(leadId), patch);
 }
