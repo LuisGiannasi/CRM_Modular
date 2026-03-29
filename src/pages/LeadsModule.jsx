@@ -155,7 +155,16 @@ export default function LeadsModule() {
   const [nuevaNota, setNuevaNota] = useState({ contenido: '', tipo: 'Observación', autor_nombre: '' });
   const [savingNota, setSavingNota] = useState(false);
   /** @type {'table' | 'kanban'} */
-  const [listViewMode, setListViewMode] = useState('table');
+  const VIEW_STORAGE = 'crm-modular-leads-ui-v2';
+  const [listViewMode, setListViewMode] = useState(() => {
+    try {
+      const v = localStorage.getItem(VIEW_STORAGE);
+      if (v === 'table' || v === 'kanban') return v;
+    } catch {
+      /* */
+    }
+    return 'kanban';
+  });
   const [draggingLeadId, setDraggingLeadId] = useState(null);
   /** @type {{ leadId: string; nombre: string; etapaPrev: string; etapaNueva: string } | null} */
   const [etapaModal, setEtapaModal] = useState(null);
@@ -166,6 +175,8 @@ export default function LeadsModule() {
   const [posponerModal, setPosponerModal] = useState(null);
   const [posponerMotivo, setPosponerMotivo] = useState('');
   const [savingPosponer, setSavingPosponer] = useState(false);
+  /** Columna sobre la que pasás al arrastrar (feedback visual). */
+  const [dragOverEtapa, setDragOverEtapa] = useState(null);
 
   const loadLeads = useCallback(async () => {
     setError(null);
@@ -374,38 +385,59 @@ export default function LeadsModule() {
 
   function handleKanbanDragStart(e, r) {
     const f = r.fields || {};
+    const et = f.etapa && ETAPAS.includes(f.etapa) ? f.etapa : 'Nuevo';
     setDraggingLeadId(r.id);
-    e.dataTransfer.setData(
-      'application/json',
-      JSON.stringify({ leadId: r.id, etapa: f.etapa || 'Nuevo' })
-    );
+    const payload = JSON.stringify({ leadId: r.id, etapa: et });
+    e.dataTransfer.setData('application/json', payload);
+    e.dataTransfer.setData('text/plain', r.id);
     e.dataTransfer.effectAllowed = 'move';
   }
 
   function handleKanbanDragEnd() {
     setDraggingLeadId(null);
+    setDragOverEtapa(null);
   }
 
-  function handleKanbanDragOver(e) {
+  function handleKanbanDragOver(e, etapaColumna) {
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
+    setDragOverEtapa(etapaColumna);
+  }
+
+  function handleKanbanDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      setDragOverEtapa(null);
+    }
   }
 
   function handleKanbanDrop(e, etapaColumna) {
     e.preventDefault();
-    let data;
+    e.stopPropagation();
+    setDragOverEtapa(null);
+    let leadId = '';
     try {
-      data = JSON.parse(e.dataTransfer.getData('application/json') || '{}');
+      const raw = e.dataTransfer.getData('application/json');
+      if (raw) {
+        const j = JSON.parse(raw);
+        if (j.leadId) leadId = j.leadId;
+      }
     } catch {
-      return;
+      /* */
     }
-    if (!data.leadId || data.etapa === etapaColumna) return;
-    const r = records.find((x) => x.id === data.leadId);
+    if (!leadId) {
+      leadId = (e.dataTransfer.getData('text/plain') || '').trim();
+    }
+    if (!leadId) return;
+    const r = records.find((x) => x.id === leadId);
     if (!r) return;
+    const f = r.fields || {};
+    const etapaPrev = f.etapa && ETAPAS.includes(f.etapa) ? f.etapa : 'Nuevo';
+    if (etapaPrev === etapaColumna) return;
     setEtapaModal({
-      leadId: data.leadId,
+      leadId: r.id,
       nombre: leadDisplayName(r),
-      etapaPrev: data.etapa || 'Nuevo',
+      etapaPrev,
       etapaNueva: etapaColumna,
     });
     setNotaEtapaTexto('');
@@ -517,7 +549,7 @@ export default function LeadsModule() {
       <header className="app-header">
         <h1>CRM Modular — Módulo 1 · Leads</h1>
         <p>
-          Listado, Kanban y edición contra la tabla Leads. Tras correr el script de esquema 08, también se registran seguimiento (última interacción) y datos de conversión al ganar un lead. Token solo en servidor (Vite proxy o Vercel).
+          Vista principal: tablero por etapa (arrastrá tarjetas). Lista para búsqueda masiva. Panel derecho: edición y notas.
         </p>
       </header>
 
@@ -529,17 +561,31 @@ export default function LeadsModule() {
             <div className="toolbar-segment" role="group" aria-label="Vista">
               <button
                 type="button"
-                className={listViewMode === 'table' ? 'active' : ''}
-                onClick={() => setListViewMode('table')}
+                className={`${listViewMode === 'kanban' ? 'active' : ''} ${listViewMode === 'table' ? 'kanban-pick-me' : ''}`}
+                onClick={() => {
+                  setListViewMode('kanban');
+                  try {
+                    localStorage.setItem(VIEW_STORAGE, 'kanban');
+                  } catch {
+                    /* */
+                  }
+                }}
               >
-                Lista
+                Kanban
               </button>
               <button
                 type="button"
-                className={listViewMode === 'kanban' ? 'active' : ''}
-                onClick={() => setListViewMode('kanban')}
+                className={listViewMode === 'table' ? 'active' : ''}
+                onClick={() => {
+                  setListViewMode('table');
+                  try {
+                    localStorage.setItem(VIEW_STORAGE, 'table');
+                  } catch {
+                    /* */
+                  }
+                }}
               >
-                Kanban
+                Lista
               </button>
             </div>
             <input
@@ -582,8 +628,9 @@ export default function LeadsModule() {
                 return (
                   <div
                     key={etapa}
-                    className="kanban-column"
-                    onDragOver={handleKanbanDragOver}
+                    className={`kanban-column ${dragOverEtapa === etapa ? 'kanban-column-over' : ''}`}
+                    onDragOver={(e) => handleKanbanDragOver(e, etapa)}
+                    onDragLeave={handleKanbanDragLeave}
                     onDrop={(e) => handleKanbanDrop(e, etapa)}
                     style={{ borderColor: st.color || 'var(--border)' }}
                   >
@@ -598,13 +645,21 @@ export default function LeadsModule() {
                         const pospuesto = rev > Date.now();
                         return (
                           <div key={r.id} style={{ position: 'relative' }}>
-                            <button
-                              type="button"
+                            {/* div draggable: los <button draggable> suelen no arrastrar bien (como en el CRM viejo). */}
+                            <div
+                              role="button"
+                              tabIndex={0}
                               draggable
                               className={`kanban-card ${r.id === selectedId ? 'selected' : ''} ${draggingLeadId === r.id ? 'dragging' : ''}`}
                               onDragStart={(e) => handleKanbanDragStart(e, r)}
                               onDragEnd={handleKanbanDragEnd}
                               onClick={() => onSelectRow(r.id)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  onSelectRow(r.id);
+                                }
+                              }}
                             >
                               <h4>{leadDisplayName(r)}</h4>
                               {f.nota_inicial && (
@@ -618,7 +673,7 @@ export default function LeadsModule() {
                                 </p>
                               )}
                               <p className="kanban-card-meta">Creado {formatDisplayDate(r.createdTime)}</p>
-                            </button>
+                            </div>
                             <div className="kanban-card-actions">
                               {(f.etapa === 'Contactado' || f.etapa === 'En gestión') && (
                                 <button
