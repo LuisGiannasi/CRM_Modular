@@ -20,16 +20,31 @@ export default async function handler(req, res) {
 
   /**
    * Segmentos hacia Airtable (tabla, opcional record id, …).
-   * En Vercel, req.url suele ser solo el subpath del handler (ej. /Leads?pageSize=100),
-   * no la URL completa /api/airtable/Leads.
+   * En Vercel, `[...slug].js` rellena `req.query.slug` (string o array). Si solo usamos
+   * `pathname`, a veces el PATCH pierde `rec…` y Airtable devuelve 404 mientras POST (una
+   * sola ruta) sigue funcionando.
    */
-  function pathPartsFromRequest() {
+  function pathPartsFromQuerySlug() {
+    const raw = req.query?.slug;
+    if (raw == null) return null;
+    if (Array.isArray(raw)) {
+      const out = raw
+        .filter(Boolean)
+        .map((s) => decodeURIComponent(String(s).trim()))
+        .filter(Boolean);
+      return out.length ? out : null;
+    }
+    const s = String(raw).trim();
+    if (!s) return null;
+    return s
+      .split('/')
+      .filter(Boolean)
+      .map((x) => decodeURIComponent(x));
+  }
+
+  function pathPartsFromPathname() {
     const pathname = (reqUrl.pathname || '/').replace(/\/+$/, '') || '/';
     const prefix = '/api/airtable';
-    /**
-     * Importante: ir primero por pathname. Si usamos solo req.query.slug, Vercel a veces
-     * manda un solo segmento (p. ej. tbl…) y se pierde rec… → PATCH a …/tbl sin id → 404.
-     */
     if (pathname.startsWith(`${prefix}/`)) {
       const rest = pathname.slice(prefix.length + 1);
       if (!rest) return [];
@@ -40,11 +55,17 @@ export default async function handler(req, res) {
     if (trimmed) {
       return trimmed.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
     }
-    const raw = req.query.slug;
-    if (raw) {
-      if (Array.isArray(raw)) return raw;
-      return String(raw).split('/').filter(Boolean);
+    return [];
+  }
+
+  function pathPartsFromRequest() {
+    const fromQuery = pathPartsFromQuerySlug();
+    const fromPath = pathPartsFromPathname();
+    if (fromQuery?.length && fromPath?.length) {
+      return fromQuery.length >= fromPath.length ? fromQuery : fromPath;
     }
+    if (fromQuery?.length) return fromQuery;
+    if (fromPath?.length) return fromPath;
     return [];
   }
 
