@@ -70,17 +70,6 @@ export default async function handler(req, res) {
   }
 
   let parts = pathPartsFromRequest();
-  /** Ruta explícita `api/airtable/[table]/[recordId].js`: Vercel pasa query.table y query.recordId. */
-  if (
-    (!parts.length || parts.length < 2) &&
-    req.query?.table != null &&
-    req.query?.recordId != null
-  ) {
-    parts = [
-      decodeURIComponent(String(req.query.table).trim()),
-      decodeURIComponent(String(req.query.recordId).trim()),
-    ].filter(Boolean);
-  }
   /** Mismo segmento que el front: ID tbl… de Leads (Airtable es más estable por ID). */
   const LEADS_TBL_ID = 'tbl0cIs2by0wqny4U';
   const leadsTableSegment = String(process.env.AIRTABLE_TABLE_LEADS || LEADS_TBL_ID).trim() || LEADS_TBL_ID;
