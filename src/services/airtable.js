@@ -145,33 +145,22 @@ export async function createRecord(table, fields) {
   });
 }
 
+/**
+ * Actualización vía API de “varios registros” con un solo ítem.
+ * Importante en Vercel: la URL queda igual que POST (solo `/tabla`), no `/tabla/recId`;
+ * así se evita el 404 cuando el proxy/edge trata mal rutas con dos segmentos.
+ * @see https://airtable.com/developers/web/api/update-multiple-records
+ */
 export async function updateRecord(table, id, fields) {
   const tbl = resolveTableSegmentForApi(table);
   const tid = normalizeRecordId(id);
-  const body = JSON.stringify({ fields, typecast: true });
-  const run = (segment) =>
-    req(`/${encodeURIComponent(segment)}/${encodeURIComponent(tid)}`, {
-      method: 'PATCH',
-      body,
-    });
-  try {
-    return await run(tbl);
-  } catch (e) {
-    const msg = String(e.message || '');
-    const is404 = /404|NOT_FOUND|not found|No encontrado/i.test(msg);
-    if (
-      is404 &&
-      tbl === AIRTABLE_LEADS_TABLE_API &&
-      /^tbl[a-zA-Z0-9]{14}$/.test(tbl)
-    ) {
-      try {
-        return await run('Leads');
-      } catch {
-        throw e;
-      }
-    }
-    throw e;
-  }
+  return req(`/${encodeURIComponent(tbl)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      records: [{ id: tid, fields }],
+      typecast: true,
+    }),
+  });
 }
 
 export async function fetchNotasByLead(leadId) {
